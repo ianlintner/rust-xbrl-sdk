@@ -41,6 +41,7 @@ Use the XBRL standard as a *versioned set of specifications*, not a single XML s
 - Do not call the linked 82-document catalog “82 implemented rules”; it lists published specification documents/suites, not implementation coverage.
 
 ## Verification
+- To check this skill's references and the dated catalog snapshot, use `terminal(command="python3 skills/xbrl-agent/scripts/check_catalog.py", timeout=60)` from the repository root. This **development-time Python checker is not part of the Rust SDK/runtime** and checks local structure only; it does not prove remote URLs remain live or specifications are implemented.
 - Every reported validation verdict includes exact input, resolved taxonomy version, supported rules and official clause/case evidence, plus unresolved/unsupported counts.
 - Every agent answer can trace each displayed value to a source fact and context; every generated file escapes untrusted content and is reproducible.
 - For a contribution, the relevant tests and actual command outputs are recorded; no full-conformance claim without official-suite coverage.
