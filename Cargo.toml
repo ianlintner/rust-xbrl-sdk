@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/xbrl-core",
+    "crates/xbrl-xml",
+    "crates/xbrl-taxonomy",
+    "crates/xbrl-inline",
+    "crates/xbrl-validate",
+    "crates/xbrl-render",
+    "crates/xbrl-cli",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/ianlintner/rust-xbrl-sdk"
+
+[workspace.dependencies]
+xbrl-core = { path = "crates/xbrl-core", version = "0.0.0" }
+xbrl-xml = { path = "crates/xbrl-xml", version = "0.0.0" }
+xbrl-taxonomy = { path = "crates/xbrl-taxonomy", version = "0.0.0" }
+xbrl-inline = { path = "crates/xbrl-inline", version = "0.0.0" }
+xbrl-validate = { path = "crates/xbrl-validate", version = "0.0.0" }
+xbrl-render = { path = "crates/xbrl-render", version = "0.0.0" }
+xbrl-cli = { path = "crates/xbrl-cli", version = "0.0.0" }
+
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"

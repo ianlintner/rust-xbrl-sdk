@@ -1,0 +1,17 @@
+[package]
+name = "xbrl-taxonomy"
+description = "Taxonomy (DTS) discovery, schemas, concepts and linkbases (scaffold: no implementation yet)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Intended dependency edges for PLAN.md milestone 4; see docs/architecture.md.
+[dependencies]
+xbrl-core.workspace = true
+xbrl-xml.workspace = true

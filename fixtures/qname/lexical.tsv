@@ -1,0 +1,22 @@
+# Qualified-name lexical cases for xbrl-core.
+#
+# Provenance: authored for this repository. Sources: XML Namespaces 1.0 (3rd ed.)
+# and XML Schema Part 2 (NCName) for the lexical rules; XBRL 2.1 section 3 for the
+# instance/linkbase namespaces. No third-party fixture data is copied here.
+# Format: id <TAB> input <TAB> expected_namespace <TAB> expected_local_name <TAB> expected_error_kind
+# expected_error_kind: '-' means the input must parse; otherwise the snake_case
+# error variant the parser must return.
+instance-context	{http://www.xbrl.org/2003/instance}context	http://www.xbrl.org/2003/instance	context	-
+instance-unit-divide	{http://www.xbrl.org/2003/instance}unit	http://www.xbrl.org/2003/instance	unit	-
+linkbase-presentation-link	{http://www.xbrl.org/2003/linkbase}presentationLink	http://www.xbrl.org/2003/linkbase	presentationLink	-
+xlink-href	{http://www.w3.org/1999/xlink}href	http://www.w3.org/1999/xlink	href	-
+extension-concept	{http://example.com/2026/custom}AssetsCurrent	http://example.com/2026/custom	AssetsCurrent	-
+extension-underscore-local	{http://example.com/2026/custom}_privateStyle	http://example.com/2026/custom	_privateStyle	-
+empty-namespace	{}context	-	-	empty_namespace
+no-braces	context	-	-	malformed_clark
+missing-closing-brace	{http://example.com/foo	-	-	malformed_clark
+empty-local-name	{http://www.xbrl.org/2003/instance}	-	-	empty_local_name
+local-name-with-colon	{http://example.com/2026/custom}a:b	-	-	invalid_local_name
+local-name-leading-digit	{http://example.com/2026/custom}1stThing	-	-	invalid_local_name
+local-name-with-brace	{http://example.com/2026/custom}a}b	-	-	invalid_local_name
+namespace-with-space	{http://example.com/2026/custom space}concept	-	-	invalid_namespace

@@ -1,0 +1,23 @@
+[package]
+name = "xbrl-cli"
+description = "Command-line front end (`xbrl`) for the Rust XBRL SDK."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xbrl"
+path = "src/main.rs"
+
+# Intended dependency edges for PLAN.md milestone 7 (the subcommands wire these
+# crates together); see docs/architecture.md.
+[dependencies]
+xbrl-core.workspace = true
+xbrl-validate.workspace = true
+xbrl-render.workspace = true
