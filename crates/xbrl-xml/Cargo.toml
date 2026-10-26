@@ -1,0 +1,18 @@
+[package]
+name = "xbrl-xml"
+description = "XBRL 2.1 XML syntax layer (scaffold: no parser implemented yet)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Intended dependency edges for PLAN.md milestone 2. The crate exposes no API yet,
+# so these edges exist to pin the boundary before the parser lands; see
+# docs/architecture.md.
+[dependencies]
+xbrl-core.workspace = true
