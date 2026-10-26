@@ -1,6 +1,6 @@
 [package]
 name = "xbrl-xml"
-description = "XBRL 2.1 XML syntax layer (scaffold: no parser implemented yet)."
+description = "XBRL 2.1 XML syntax layer: bounded namespace-aware streaming reader and local-only URI/catalog resolver."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,11 @@ publish = false
 [lints]
 workspace = true
 
-# Intended dependency edges for PLAN.md milestone 2. The crate exposes no API yet,
-# so these edges exist to pin the boundary before the parser lands; see
-# docs/architecture.md.
+# PLAN.md milestone 2; see docs/architecture.md. quick-xml only tokenizes: all
+# namespace, entity, DOCTYPE and limit policy lives in this crate.
 [dependencies]
+quick-xml = "0.41.0"
 xbrl-core.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
