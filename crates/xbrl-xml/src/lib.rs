@@ -1,7 +1,9 @@
 //! Bounded, namespace-aware streaming XML reader for XBRL 2.1 documents.
 //!
-//! Status: **milestone 2** (PLAN.md). This crate wraps `quick_xml` with
-//! namespace resolution, hard limits on resource use, and typed diagnostics.
+//! Status: **milestone 3** (PLAN.md). This crate wraps `quick_xml` with
+//! namespace resolution, hard limits on resource use, typed diagnostics and
+//! syntax-level instance extraction ([`instance::parse_instance`]). It does not
+//! validate a DTS or claim XBRL conformance.
 //! It deliberately refuses DOCTYPE declarations, external entity references,
 //! and remote fetches. Every finding is reported as a [`xbrl_core::diagnostic::Diagnostic`]
 //! with a stable rule id, severity and source span.
@@ -19,6 +21,7 @@
 //!
 //! Dependency boundary: `xbrl-core` only (see `docs/architecture.md`).
 
+pub mod instance;
 pub mod limits;
 pub mod reader;
 pub mod resolver;

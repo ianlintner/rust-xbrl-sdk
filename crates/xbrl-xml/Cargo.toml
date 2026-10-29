@@ -15,6 +15,7 @@ workspace = true
 # namespace, entity, DOCTYPE and limit policy lives in this crate.
 [dependencies]
 quick-xml = "0.41.0"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 xbrl-core.workspace = true
 
 [dev-dependencies]

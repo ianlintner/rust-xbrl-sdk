@@ -1,0 +1,26 @@
+# id<TAB>XML body<TAB>expected rule; authored from XBRL 2.1 §§4.1–4.8 (README.md).
+missing-context-id	<context><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+bad-context-id	<context id="12"><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+missing-entity	<context id="c"><period><forever/></period></context>	xbrl-instance:invalid-structure
+empty-scheme	<context id="c"><entity><identifier scheme="">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+whitespace-scheme	<context id="c"><entity><identifier scheme="   ">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+empty-period	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period/></context>	xbrl-instance:invalid-period
+reversed-period	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><startDate>2025-02-01</startDate><endDate>2025-01-31</endDate></period></context>	xbrl-instance:invalid-period
+bad-leap-day	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-02-29</instant></period></context>	xbrl-instance:invalid-period
+invalid-period-order	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><endDate>2025-02-01</endDate><startDate>2025-01-01</startDate></period></context>	xbrl-instance:invalid-period
+empty-segment	<context id="c"><entity><identifier scheme="urn:s">E</identifier><segment/></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+xbrli-in-segment	<context id="c"><entity><identifier scheme="urn:s">E</identifier><segment><unit/></segment></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+missing-unit-id	<unit><measure>iso:USD</measure></unit>	xbrl-instance:invalid-structure
+missing-measure	<unit id="u"/>	xbrl-instance:invalid-structure
+unbound-measure	<unit id="u"><measure>bad:USD</measure></unit>	xbrl-instance:invalid-measure
+empty-numerator	<unit id="u"><divide><unitNumerator/><unitDenominator><measure>iso:USD</measure></unitDenominator></divide></unit>	xbrl-instance:invalid-structure
+missing-contextref	<ex:Revenue unitRef="u" decimals="2">100</ex:Revenue>	xbrl-instance:invalid-structure
+both-accuracy	<ex:Revenue contextRef="c" unitRef="u" decimals="2" precision="4">100</ex:Revenue>	xbrl-instance:invalid-accuracy
+negative-precision	<ex:Revenue contextRef="c" unitRef="u" precision="-1">100</ex:Revenue>	xbrl-instance:invalid-accuracy
+invalid-decimals	<ex:Revenue contextRef="c" unitRef="u" decimals="3.5">100</ex:Revenue>	xbrl-instance:invalid-accuracy
+nil-with-accuracy	<ex:Revenue contextRef="c" unitRef="u" decimals="2" xsi:nil="true"/>	xbrl-instance:invalid-structure
+nil-with-content	<ex:Revenue contextRef="c" xsi:nil="true">100</ex:Revenue>	xbrl-instance:invalid-structure
+unsupported-tuple	<ex:Group><ex:Revenue contextRef="c">100</ex:Revenue></ex:Group>	xbrl-instance:unsupported
+unsupported-footnote	<link:footnoteLink/>	xbrl-instance:unsupported
+malformed-xml	<ex:Revenue contextRef="c">100</ex:Wrong>	xbrl-xml:malformed
+forbidden-doctype	<!DOCTYPE xbrl><ex:Revenue contextRef="c">100</ex:Revenue>	xbrl-xml:doctype-forbidden
