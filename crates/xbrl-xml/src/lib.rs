@@ -1,16 +1,26 @@
-//! XBRL 2.1 XML syntax layer: bounded, namespace-aware reading of XBRL documents.
+//! Bounded, namespace-aware streaming XML reader for XBRL 2.1 documents.
 //!
-//! Status: **scaffold only** (PLAN.md milestone 2). No parser is implemented, so
-//! this crate deliberately exposes no items and cannot be mistaken for a working
-//! reader or validator.
+//! Status: **milestone 2** (PLAN.md). This crate wraps `quick_xml` with
+//! namespace resolution, hard limits on resource use, and typed diagnostics.
+//! It deliberately refuses DOCTYPE declarations, external entity references,
+//! and remote fetches. Every finding is reported as a [`xbrl_core::diagnostic::Diagnostic`]
+//! with a stable rule id, severity and source span.
 //!
-//! When it lands it will:
+//! # Specification provenance (XML and Namespaces bases)
 //!
-//! * stream from a reader with hard limits on document size, nesting depth and
-//!   entity expansion, refusing remote fetches by default;
-//! * resolve element and attribute names to [`xbrl_core::qname::QName`];
-//! * report every problem as a [`xbrl_core::diagnostic::Diagnostic`] carrying a
-//!   stable rule id, severity and source span, instead of aborting with a string.
+//! * XML 1.0 (5th ed., 2008-11-26) — <https://www.w3.org/TR/xml/>
+//! * Namespaces in XML 1.0 (3rd ed., 2009-12-08) — <https://www.w3.org/TR/REC-xml-names/>
 //!
-//! Dependency boundary: `xbrl-core` only. Taxonomy, validation and rendering
-//! concerns belong in their own crates.
+//! # Safety
+//!
+//! This crate requires no `unsafe` and the workspace forbids it. All limits
+//! are explicit fields on [`limits::Limits`] with non-zero defaults checked before
+//! every buffer allocation and every recursion depth increment.
+//!
+//! Dependency boundary: `xbrl-core` only (see `docs/architecture.md`).
+
+pub mod limits;
+pub mod reader;
+pub mod resolver;
+pub mod rules;
+pub mod uri;
