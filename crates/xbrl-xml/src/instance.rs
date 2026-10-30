@@ -5,7 +5,7 @@
 //! Segment/scenario extension trees are preserved without DTS interpretation.
 //! No taxonomy is loaded and extraction never asserts validity.
 //! Specification: XBRL 2.1 REC 2003-12-31, errata 2013-02-20, §§4.1–4.8;
-//! lexical forms follow XML Schema 1.0 Part 2 (see [`crate::xsd`]).
+//! lexical forms follow XML Schema 1.0 Part 2.
 //!
 //! # Memory model
 //!
