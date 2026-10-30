@@ -1,0 +1,67 @@
+# id<TAB>XML body<TAB>expected rule; authored from XBRL 2.1 §§4.1–4.8 (README.md).
+missing-context-id	<context><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+bad-context-id	<context id="12"><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+missing-entity	<context id="c"><period><forever/></period></context>	xbrl-instance:invalid-structure
+empty-scheme	<context id="c"><entity><identifier scheme="">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+whitespace-scheme	<context id="c"><entity><identifier scheme="   ">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+empty-period	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period/></context>	xbrl-instance:invalid-period
+reversed-period	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><startDate>2025-02-01</startDate><endDate>2025-01-31</endDate></period></context>	xbrl-instance:invalid-period
+bad-leap-day	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-02-29</instant></period></context>	xbrl-instance:invalid-period
+invalid-period-order	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><endDate>2025-02-01</endDate><startDate>2025-01-01</startDate></period></context>	xbrl-instance:invalid-period
+empty-segment	<context id="c"><entity><identifier scheme="urn:s">E</identifier><segment/></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+xbrli-in-segment	<context id="c"><entity><identifier scheme="urn:s">E</identifier><segment><unit/></segment></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+missing-unit-id	<unit><measure>iso:USD</measure></unit>	xbrl-instance:invalid-structure
+missing-measure	<unit id="u"/>	xbrl-instance:invalid-structure
+unbound-measure	<unit id="u"><measure>bad:USD</measure></unit>	xbrl-instance:invalid-measure
+empty-numerator	<unit id="u"><divide><unitNumerator/><unitDenominator><measure>iso:USD</measure></unitDenominator></divide></unit>	xbrl-instance:invalid-structure
+missing-contextref	<ex:Revenue unitRef="u" decimals="2">100</ex:Revenue>	xbrl-instance:invalid-structure
+both-accuracy	<ex:Revenue contextRef="c" unitRef="u" decimals="2" precision="4">100</ex:Revenue>	xbrl-instance:invalid-accuracy
+negative-precision	<ex:Revenue contextRef="c" unitRef="u" precision="-1">100</ex:Revenue>	xbrl-instance:invalid-accuracy
+invalid-decimals	<ex:Revenue contextRef="c" unitRef="u" decimals="3.5">100</ex:Revenue>	xbrl-instance:invalid-accuracy
+nil-with-accuracy	<ex:Revenue contextRef="c" unitRef="u" decimals="2" xsi:nil="true"/>	xbrl-instance:invalid-structure
+nil-with-content	<ex:Revenue contextRef="c" xsi:nil="true">100</ex:Revenue>	xbrl-instance:invalid-structure
+unsupported-tuple	<ex:Group><ex:Revenue contextRef="c">100</ex:Revenue></ex:Group>	xbrl-instance:unsupported
+unsupported-footnote	<link:footnoteLink/>	xbrl-instance:unsupported
+malformed-xml	<ex:Revenue contextRef="c">100</ex:Wrong>	xbrl-xml:malformed
+forbidden-doctype	<!DOCTYPE xbrl><ex:Revenue contextRef="c">100</ex:Revenue>	xbrl-xml:doctype-forbidden
+duplicate-context-id	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context><context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+duplicate-unit-id	<unit id="u"><measure>iso:USD</measure></unit><unit id="u"><measure>iso:USD</measure></unit>	xbrl-instance:invalid-structure
+duplicate-fact-id	<ex:A contextRef="c" id="f">1</ex:A><ex:B contextRef="c" id="f">2</ex:B>	xbrl-instance:invalid-structure
+fact-id-collides-with-context-id	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><forever/></period></context><ex:A contextRef="c" id="c">1</ex:A>	xbrl-instance:invalid-structure
+reversed-period-utc-dates	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><startDate>2025-01-06Z</startDate><endDate>2025-01-05Z</endDate></period></context>	xbrl-instance:invalid-period
+reversed-date-then-datetime	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><startDate>2025-01-05</startDate><endDate>2025-01-04T00:00:00</endDate></period></context>	xbrl-instance:invalid-period
+equal-datetimes	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><startDate>2025-01-05T10:00:00Z</startDate><endDate>2025-01-05T10:00:00Z</endDate></period></context>	xbrl-instance:invalid-period
+reversed-mixed-zone-certain	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><startDate>2025-01-05T00:00:00</startDate><endDate>2025-01-03T00:00:00Z</endDate></period></context>	xbrl-instance:invalid-period
+date-nonpadded	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-1-5</instant></period></context>	xbrl-instance:invalid-period
+date-plus-sign	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>+2025-01-05</instant></period></context>	xbrl-instance:invalid-period
+date-two-digit-year	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>25-01-05</instant></period></context>	xbrl-instance:invalid-period
+datetime-lowercase-t	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05t10:00:00</instant></period></context>	xbrl-instance:invalid-period
+date-lowercase-z	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05z</instant></period></context>	xbrl-instance:invalid-period
+datetime-seconds-60	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05T10:00:60</instant></period></context>	xbrl-instance:invalid-period
+date-nbsp	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05&#xA0;</instant></period></context>	xbrl-instance:invalid-period
+date-year-0000	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>0000-01-01</instant></period></context>	xbrl-instance:invalid-period
+date-zone-over-14	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05+15:00</instant></period></context>	xbrl-instance:invalid-period
+date-zone-minutes-60	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05+05:60</instant></period></context>	xbrl-instance:invalid-period
+datetime-hour-24	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05T24:00:00</instant></period></context>	xbrl-instance:invalid-period
+date-month-13	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-13-05</instant></period></context>	xbrl-instance:invalid-period
+datetime-missing-seconds	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05T10:00</instant></period></context>	xbrl-instance:invalid-period
+bad-leap-century	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>1900-02-29</instant></period></context>	xbrl-instance:invalid-period
+date-trailing-garbage	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>2025-01-05x</instant></period></context>	xbrl-instance:invalid-period
+date-year-over-supported-range	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>1234567890-01-05</instant></period></context>	xbrl-instance:unsupported
+date-negative-year-unsupported	<context id="c"><entity><identifier scheme="urn:s">E</identifier></entity><period><instant>-0001-01-01</instant></period></context>	xbrl-instance:unsupported
+scheme-nbsp	<context id="c"><entity><identifier scheme="&#xA0;">E</identifier></entity><period><forever/></period></context>	xbrl-instance:invalid-structure
+decimals-double-sign	<ex:A contextRef="c" unitRef="u" decimals="-+3">1</ex:A>	xbrl-instance:invalid-accuracy
+precision-double-sign	<ex:A contextRef="c" unitRef="u" precision="+-1">1</ex:A>	xbrl-instance:invalid-accuracy
+decimals-empty	<ex:A contextRef="c" unitRef="u" decimals="">1</ex:A>	xbrl-instance:invalid-accuracy
+decimals-exceeds-i64	<ex:A contextRef="c" unitRef="u" decimals="99999999999999999999">1</ex:A>	xbrl-instance:unsupported
+precision-exceeds-u64	<ex:A contextRef="c" unitRef="u" precision="99999999999999999999">1</ex:A>	xbrl-instance:unsupported
+nil-invalid-boolean	<ex:A contextRef="c" xsi:nil="yes"/>	xbrl-instance:invalid-structure
+nil-uppercase-boolean	<ex:A contextRef="c" xsi:nil="TRUE"/>	xbrl-instance:invalid-structure
+linkbaseref-unsupported	<link:linkbaseRef xlink:type="simple" xlink:href="l.xml"/>	xbrl-instance:unsupported
+roleref-unsupported	<link:roleRef roleURI="urn:r" xlink:type="simple" xlink:href="r.xsd#r"/>	xbrl-instance:unsupported
+arcroleref-unsupported	<link:arcroleRef arcroleURI="urn:a" xlink:type="simple" xlink:href="r.xsd#a"/>	xbrl-instance:unsupported
+schemaref-missing-type	<link:schemaRef xlink:href="b.xsd"/>	xbrl-instance:invalid-structure
+schemaref-wrong-type	<link:schemaRef xlink:type="locator" xlink:href="b.xsd"/>	xbrl-instance:invalid-structure
+measure-nbsp	<unit id="u"><measure>iso:USD&#xA0;</measure></unit>	xbrl-instance:invalid-measure
+measure-prefix-out-of-scope	<unit id="a" xmlns:q="urn:q"><measure>q:A</measure></unit><unit id="b"><measure>q:A</measure></unit>	xbrl-instance:invalid-measure
+root-character-data	stray text	xbrl-instance:invalid-structure

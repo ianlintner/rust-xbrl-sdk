@@ -13,6 +13,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// Reason a [`QName`] could not be constructed or parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,11 +89,24 @@ impl Error for QNameError {}
 /// assert_eq!(name.to_prefixed(), "xbrli:context");
 /// # Ok::<(), xbrl_core::qname::QNameError>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct QName {
     prefix: Option<String>,
     namespace: String,
     local_name: String,
+}
+
+impl PartialEq for QName {
+    fn eq(&self, other: &Self) -> bool {
+        self.namespace == other.namespace && self.local_name == other.local_name
+    }
+}
+impl Eq for QName {}
+impl Hash for QName {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.namespace.hash(state);
+        self.local_name.hash(state);
+    }
 }
 
 impl QName {
@@ -239,6 +253,16 @@ mod tests {
     use super::*;
 
     const INSTANCE: &str = "http://www.xbrl.org/2003/instance";
+
+    #[test]
+    fn prefixes_are_not_part_of_expanded_name_identity() {
+        let a = QName::new(Some("a"), INSTANCE, "context").unwrap();
+        let b = QName::new(Some("b"), INSTANCE, "context").unwrap();
+        assert_eq!(a, b);
+        let mut names = std::collections::HashSet::new();
+        names.insert(a);
+        assert!(names.contains(&b));
+    }
 
     #[test]
     fn builds_and_renders_a_prefixed_name() {
