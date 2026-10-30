@@ -38,6 +38,10 @@ fn extracts_basic_instance() {
         matches!(&instance.units[1].measures, UnitMeasures::Divide { numerator, denominator } if numerator[0].local_name() == "USD" && denominator[0].local_name() == "shares")
     );
     assert_eq!(instance.facts.len(), 4);
+    let UnitMeasures::Simple(measures) = &instance.units[0].measures else {
+        panic!("simple unit")
+    };
+    assert_eq!(measures[0].to_prefixed(), "iso:USD");
     assert_eq!(instance.facts[0].concept.local_name(), "Revenue");
     assert_eq!(instance.facts[0].context_ref, "c2");
     assert_eq!(instance.facts[0].unit_ref.as_deref(), Some("usd"));
@@ -105,7 +109,7 @@ fn authored_negative_fixtures_report_specific_rule() {
         );
         count += 1;
     }
-    assert_eq!(count, 25);
+    assert_eq!(count, 66);
 }
 
 #[test]
@@ -136,6 +140,109 @@ fn accepts_xml_schema_date_with_timezone() {
         parsed.contexts[0].period,
         Period::Instant("2024-02-29+05:00".into())
     );
+}
+
+#[test]
+fn element_count_limit_rejects_many_small_nodes() {
+    let xml = include_str!("../../../fixtures/instance/basic.xml");
+    let exact = Limits {
+        max_instance_elements: 25,
+        ..Limits::default()
+    };
+    let under = Limits {
+        max_instance_elements: 3,
+        ..Limits::default()
+    };
+    let _ = parse_instance(xml.as_bytes(), exact);
+    let err = parse_instance(xml.as_bytes(), under).unwrap_err();
+    assert_eq!(err.rule().as_str(), xbrl_xml::instance::LIMIT_ELEMENTS);
+}
+
+#[test]
+fn element_count_limit_is_inclusive_at_n_and_rejects_n_plus_one() {
+    let xml = r#"<xbrl xmlns="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink"><link:schemaRef xlink:type="simple" xlink:href="a.xsd"/></xbrl>"#;
+    let at_n = Limits {
+        max_instance_elements: 2,
+        ..Limits::default()
+    };
+    let below_n = Limits {
+        max_instance_elements: 1,
+        ..Limits::default()
+    };
+    assert_eq!(
+        parse_instance(xml.as_bytes(), at_n)
+            .unwrap()
+            .schema_refs
+            .len(),
+        1
+    );
+    assert_eq!(
+        parse_instance(xml.as_bytes(), below_n)
+            .unwrap_err()
+            .rule()
+            .as_str(),
+        xbrl_xml::instance::LIMIT_ELEMENTS
+    );
+}
+
+#[test]
+fn shared_namespace_scope_supports_many_measures_without_per_node_clones() {
+    let mut xml = String::from(
+        "<xbrl xmlns=\"http://www.xbrl.org/2003/instance\" xmlns:link=\"http://www.xbrl.org/2003/linkbase\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"",
+    );
+    for i in 0..400 {
+        xml.push_str(&format!(" xmlns:p{i}=\"urn:measure{i}\""));
+    }
+    xml.push_str("><link:schemaRef xlink:type=\"simple\" xlink:href=\"a.xsd\"/><unit id=\"u\">");
+    for _ in 0..5000 {
+        xml.push_str("<measure>p1:A</measure>");
+    }
+    xml.push_str("</unit></xbrl>");
+    let parsed = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    let UnitMeasures::Simple(names) = &parsed.units[0].measures else {
+        panic!("expected product")
+    };
+    assert_eq!(names.len(), 5000);
+    assert_eq!(names[0].namespace(), "urn:measure1");
+    assert_eq!(names[4999].namespace(), "urn:measure1");
+}
+
+#[test]
+fn xsi_nil_and_precision_collapse_xml_whitespace() {
+    let xml = r#"<xbrl xmlns="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ex="urn:ex"><link:schemaRef xlink:type="simple" xlink:href="a.xsd"/><ex:A contextRef="c" xsi:nil=" true "/><ex:B contextRef="c" precision=" -0 ">1</ex:B></xbrl>"#;
+    let parsed = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    assert_eq!(parsed.facts[0].value, None);
+    assert_eq!(parsed.facts[1].accuracy, Some(Accuracy::Precision(0)));
+}
+
+#[test]
+fn same_day_duration_and_empty_identifier_are_syntactically_accepted() {
+    let xml = r#"<xbrl xmlns="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink"><link:schemaRef xlink:type="simple" xlink:href="a.xsd"/><context id="c"><entity><identifier scheme="urn:entity"/></entity><period><startDate>2025-01-05</startDate><endDate>2025-01-05</endDate></period></context></xbrl>"#;
+    let parsed = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    assert_eq!(parsed.contexts[0].entity.identifier, "");
+    assert_eq!(
+        parsed.contexts[0].period,
+        Period::Duration {
+            start: "2025-01-05".into(),
+            end: "2025-01-05".into()
+        }
+    );
+}
+
+#[test]
+fn instance_rule_ids_are_stable_and_valid() {
+    use xbrl_core::diagnostic::RuleId;
+    for id in [
+        xbrl_xml::instance::INVALID_ROOT,
+        xbrl_xml::instance::INVALID_STRUCTURE,
+        xbrl_xml::instance::INVALID_MEASURE,
+        xbrl_xml::instance::INVALID_PERIOD,
+        xbrl_xml::instance::INVALID_ACCURACY,
+        xbrl_xml::instance::UNSUPPORTED,
+        xbrl_xml::instance::LIMIT_ELEMENTS,
+    ] {
+        assert!(RuleId::new(id).is_ok(), "invalid rule id {id}");
+    }
 }
 
 #[test]

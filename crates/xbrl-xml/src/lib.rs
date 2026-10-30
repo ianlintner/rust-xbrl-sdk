@@ -27,3 +27,4 @@ pub mod reader;
 pub mod resolver;
 pub mod rules;
 pub mod uri;
+mod xsd;

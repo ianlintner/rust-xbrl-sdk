@@ -2,12 +2,33 @@
 //!
 //! Only direct item facts are supported. Tuples, footnotes, linkbase/role refs
 //! and fraction content fail closed until their semantics are implemented.
-//! Segment/scenario extension trees are preserved without DTS interpretation. No taxonomy is loaded and extraction never asserts validity.
-//! Specification: XBRL 2.1 REC 2003-12-31, errata 2013-02-20, §§4.1–4.8.
+//! Segment/scenario extension trees are preserved without DTS interpretation.
+//! No taxonomy is loaded and extraction never asserts validity.
+//! Specification: XBRL 2.1 REC 2003-12-31, errata 2013-02-20, §§4.1–4.8;
+//! lexical forms follow XML Schema 1.0 Part 2 (see [`crate::xsd`]).
+//!
+//! # Memory model
+//!
+//! Extraction is a single pass with no document-sized DOM:
+//!
+//! * `schemaRef` and item facts (direct children of the root) are *leaves*:
+//!   one start tag plus one text buffer, finalized at the end tag.
+//! * Only a `context` or `unit` subtree is buffered as a small tree, and it is
+//!   dropped as soon as it is converted into the typed model.
+//! * Namespace bindings live in one shared scope stack that grows by the
+//!   declarations of each open element and shrinks at its end tag. Measure
+//!   QNames are resolved at the measure's end tag against that stack, so no
+//!   per-element copy of in-scope bindings exists.
+//! * The number of elements is capped by [`Limits::max_instance_elements`]
+//!   (reported as [`LIMIT_ELEMENTS`]); document bytes, depth, attribute and
+//!   token sizes are capped by the reader.
+//!
+//! Retained memory is therefore the typed output plus the open `context`/`unit`
+//! subtree, both bounded by the byte and element limits.
 
+use std::collections::HashSet;
 use std::io::Read;
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
 use xbrl_core::instance::{
     Accuracy, Context, Entity, ExtensionNode, Fact, Instance, Period, SchemaRef, Unit, UnitMeasures,
@@ -16,12 +37,13 @@ use xbrl_core::namespaces::{XBRL_INSTANCE, XBRL_LINKBASE, XLINK};
 use xbrl_core::qname::QName;
 
 use crate::limits::Limits;
-use crate::reader::{NamespaceBinding, StartElement, XML_NAMESPACE, XmlEvent, XmlReader};
+use crate::reader::{StartElement, XML_NAMESPACE, XmlEvent, XmlReader};
 use crate::uri::Uri;
+use crate::xsd::{Temporal, TemporalError, collapse, duration_is_reversed, is_blank};
 
 /// The root element is not xbrli:xbrl.
 pub const INVALID_ROOT: &str = "xbrl-instance:invalid-root";
-/// Required syntax is missing, out of sequence or malformed.
+/// Required syntax is missing, out of sequence, duplicated or malformed.
 pub const INVALID_STRUCTURE: &str = "xbrl-instance:invalid-structure";
 /// A QName-valued measure has an unbound prefix or no representable namespace.
 pub const INVALID_MEASURE: &str = "xbrl-instance:invalid-measure";
@@ -29,8 +51,12 @@ pub const INVALID_MEASURE: &str = "xbrl-instance:invalid-measure";
 pub const INVALID_PERIOD: &str = "xbrl-instance:invalid-period";
 /// An accuracy attribute is malformed or mutually exclusive with another.
 pub const INVALID_ACCURACY: &str = "xbrl-instance:invalid-accuracy";
-/// A construct requires DTS semantics, or exceeds the supported numeric range.
+/// A construct requires DTS semantics, or exceeds the supported range.
 pub const UNSUPPORTED: &str = "xbrl-instance:unsupported";
+/// Too many instance elements were materialized.
+pub const LIMIT_ELEMENTS: &str = "xbrl-instance:limit-elements";
+
+const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
 
 fn error(rule: &str, message: impl Into<String>, span: SourceSpan) -> Diagnostic {
     Diagnostic::new(
@@ -41,11 +67,27 @@ fn error(rule: &str, message: impl Into<String>, span: SourceSpan) -> Diagnostic
     )
 }
 
+/// A buffered element inside a `context` or `unit` subtree.
 #[derive(Debug)]
 struct Node {
     start: StartElement,
-    bindings: Vec<NamespaceBinding>,
+    /// Resolved at the end tag for `xbrli:measure` only.
+    measure: Option<QName>,
     children: Vec<Node>,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeafKind {
+    Fact,
+    SchemaRef,
+}
+
+/// A direct root child that is finalized without buffering a subtree.
+#[derive(Debug)]
+struct Leaf {
+    start: StartElement,
+    kind: LeafKind,
     text: String,
 }
 
@@ -55,84 +97,245 @@ struct Node {
 ///
 /// Returns a rule-coded [`Diagnostic`] on malformed XML, resource bounds,
 /// unsupported constructs, or malformed supported syntax. It does **not**
-/// validate taxonomy types, IDREF targets, duplicates or filing profiles.
-/// Storage for the extracted tree is bounded by the XML input byte budget.
+/// validate taxonomy types, IDREF targets or filing profiles. It does enforce
+/// document-wide uniqueness of `context`, `unit` and fact `id` values.
 pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Diagnostic> {
+    let max_elements = limits.max_instance_elements;
     let mut reader = XmlReader::new(source, limits);
+    let mut elements: u32 = 0;
+    let mut depth: usize = 0;
+    // Shared in-scope namespace bindings and the length to restore per element.
+    let mut scope: Vec<(Option<String>, String)> = Vec::new();
+    let mut marks: Vec<usize> = Vec::new();
     let mut stack: Vec<Node> = Vec::new();
-    let mut root = None;
+    let mut leaf: Option<Leaf> = None;
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut root_base: Option<String> = None;
+    let mut root_span: Option<SourceSpan> = None;
+    let mut past_refs = false;
+    let mut instance = Instance {
+        schema_refs: Vec::new(),
+        contexts: Vec::new(),
+        units: Vec::new(),
+        facts: Vec::new(),
+    };
+
     while let Some(event) = reader.next_event()? {
         match event {
             XmlEvent::Start(start) => {
-                // Only measure text needs in-scope bindings. Cloning every root
-                // sibling's namespace stack would multiply memory by the
-                // namespace count on long filings.
-                let bindings = if start.name.namespace() == Some(XBRL_INSTANCE)
-                    && start.name.local_name() == "measure"
-                {
-                    let mut bindings = Vec::new();
-                    for ancestor in &stack {
-                        bindings.extend(ancestor.start.namespaces.iter().cloned());
+                elements = elements.saturating_add(1);
+                if elements > max_elements {
+                    return Err(error(
+                        LIMIT_ELEMENTS,
+                        "instance element count exceeds limit",
+                        start.span,
+                    ));
+                }
+                marks.push(scope.len());
+                for binding in &start.namespaces {
+                    scope.push((
+                        binding.prefix().map(str::to_owned),
+                        binding.uri().to_owned(),
+                    ));
+                }
+                depth += 1;
+                match depth {
+                    1 => {
+                        if !is(&start, XBRL_INSTANCE, "xbrl") {
+                            return Err(error(INVALID_ROOT, "expected xbrli:xbrl", start.span));
+                        }
+                        root_base = attr(&start, Some(XML_NAMESPACE), "base").map(str::to_owned);
+                        root_span = Some(start.span);
                     }
-                    bindings.extend(start.namespaces.iter().cloned());
-                    bindings
-                } else {
-                    Vec::new()
-                };
-                stack.push(Node {
-                    start,
-                    bindings,
-                    children: Vec::new(),
-                    text: String::new(),
-                });
+                    2 => {
+                        if is(&start, XBRL_LINKBASE, "schemaRef") {
+                            if past_refs {
+                                return Err(error(
+                                    INVALID_STRUCTURE,
+                                    "schemaRef must precede other root children",
+                                    start.span,
+                                ));
+                            }
+                            leaf = Some(Leaf {
+                                start,
+                                kind: LeafKind::SchemaRef,
+                                text: String::new(),
+                            });
+                            continue;
+                        }
+                        past_refs = true;
+                        if is(&start, XBRL_INSTANCE, "context") || is(&start, XBRL_INSTANCE, "unit")
+                        {
+                            stack.push(node(start));
+                        } else if start.name.namespace() == Some(XBRL_LINKBASE)
+                            || start.name.namespace() == Some(XBRL_INSTANCE)
+                        {
+                            return Err(error(
+                                UNSUPPORTED,
+                                format!("unsupported root child {}", start.name.local_name()),
+                                start.span,
+                            ));
+                        } else {
+                            leaf = Some(Leaf {
+                                start,
+                                kind: LeafKind::Fact,
+                                text: String::new(),
+                            });
+                        }
+                    }
+                    _ => {
+                        if let Some(open) = &leaf {
+                            return Err(match open.kind {
+                                LeafKind::Fact => error(
+                                    UNSUPPORTED,
+                                    "tuple or complex fact content requires taxonomy type information",
+                                    open.start.span,
+                                ),
+                                LeafKind::SchemaRef => error(
+                                    INVALID_STRUCTURE,
+                                    "schemaRef cannot contain elements",
+                                    open.start.span,
+                                ),
+                            });
+                        }
+                        stack.push(node(start));
+                    }
+                }
             }
             XmlEvent::Text(text) => {
-                if let Some(node) = stack.last_mut() {
-                    node.text.push_str(&text.text);
+                if let Some(open) = &mut leaf {
+                    open.text.push_str(&text.text);
+                } else if let Some(top) = stack.last_mut() {
+                    top.text.push_str(&text.text);
+                } else if depth == 1 && !is_blank(&text.text) {
+                    return Err(error(
+                        INVALID_STRUCTURE,
+                        "unexpected character data",
+                        text.span,
+                    ));
                 }
             }
-            XmlEvent::End(_) => {
-                let node = stack
-                    .pop()
-                    .expect("well-formed reader balances starts and ends");
-                if let Some(parent) = stack.last_mut() {
-                    parent.children.push(node);
-                } else {
-                    root = Some(node);
+            XmlEvent::End(end) => {
+                match depth {
+                    1 => {
+                        if instance.schema_refs.is_empty() {
+                            return Err(error(
+                                INVALID_STRUCTURE,
+                                "at least one schemaRef is required",
+                                end.span,
+                            ));
+                        }
+                    }
+                    2 => {
+                        if let Some(done) = leaf.take() {
+                            match done.kind {
+                                LeafKind::SchemaRef => instance
+                                    .schema_refs
+                                    .push(schema_ref(&done, root_base.as_deref())?),
+                                LeafKind::Fact => {
+                                    let fact = fact(&done)?;
+                                    if let Some(id) = &fact.id {
+                                        claim(&mut ids, id, fact.span)?;
+                                    }
+                                    instance.facts.push(fact);
+                                }
+                            }
+                        } else {
+                            let done = stack.pop().expect("reader balances start and end");
+                            if is(&done.start, XBRL_INSTANCE, "context") {
+                                let ctx = context(&done)?;
+                                claim(&mut ids, &ctx.id, ctx.span)?;
+                                instance.contexts.push(ctx);
+                            } else {
+                                let u = unit(&done)?;
+                                claim(&mut ids, &u.id, u.span)?;
+                                instance.units.push(u);
+                            }
+                        }
+                    }
+                    _ => {
+                        let mut done = stack.pop().expect("reader balances start and end");
+                        if is(&done.start, XBRL_INSTANCE, "measure") {
+                            done.measure = Some(measure_qname(&done, &scope)?);
+                        }
+                        stack
+                            .last_mut()
+                            .expect("subtree has an open parent")
+                            .children
+                            .push(done);
+                    }
                 }
+                depth -= 1;
+                scope.truncate(marks.pop().expect("one mark per open element"));
             }
         }
     }
-    let root = root.expect("reader requires root");
-    parse_root(&root)
+    if root_span.is_none() {
+        return Err(error(
+            INVALID_ROOT,
+            "document has no root element",
+            SourceSpan::new(0, 0).expect("empty span"),
+        ));
+    }
+    Ok(instance)
 }
 
-fn is(node: &Node, ns: &str, local: &str) -> bool {
-    node.start.name.namespace() == Some(ns) && node.start.name.local_name() == local
+fn node(start: StartElement) -> Node {
+    Node {
+        start,
+        measure: None,
+        children: Vec::new(),
+        text: String::new(),
+    }
 }
 
-fn attr<'a>(node: &'a Node, ns: Option<&str>, local: &str) -> Option<&'a str> {
-    node.start
+/// Records an XML ID, rejecting a second use anywhere in the instance.
+fn claim(ids: &mut HashSet<String>, id: &str, span: SourceSpan) -> Result<(), Diagnostic> {
+    if ids.insert(id.to_owned()) {
+        Ok(())
+    } else {
+        Err(error(
+            INVALID_STRUCTURE,
+            format!("duplicate XML ID {id:?}"),
+            span,
+        ))
+    }
+}
+
+fn is(start: &StartElement, ns: &str, local: &str) -> bool {
+    start.name.namespace() == Some(ns) && start.name.local_name() == local
+}
+
+fn node_is(node: &Node, ns: &str, local: &str) -> bool {
+    is(&node.start, ns, local)
+}
+
+fn attr<'a>(start: &'a StartElement, ns: Option<&str>, local: &str) -> Option<&'a str> {
+    start
         .attributes
         .iter()
         .find(|a| a.name.namespace() == ns && a.name.local_name() == local)
         .map(|a| a.value.as_str())
 }
 
-fn required<'a>(node: &'a Node, ns: Option<&str>, local: &str) -> Result<&'a str, Diagnostic> {
-    attr(node, ns, local)
-        .filter(|v| !v.is_empty())
+fn required<'a>(
+    start: &'a StartElement,
+    ns: Option<&str>,
+    local: &str,
+) -> Result<&'a str, Diagnostic> {
+    attr(start, ns, local)
+        .filter(|v| !is_blank(v))
         .ok_or_else(|| {
             error(
                 INVALID_STRUCTURE,
                 format!("missing or empty @{local}"),
-                node.start.span,
+                start.span,
             )
         })
 }
 
 fn only_whitespace(node: &Node) -> Result<(), Diagnostic> {
-    if node.text.trim().is_empty() {
+    if is_blank(&node.text) {
         Ok(())
     } else {
         Err(error(
@@ -150,7 +353,7 @@ fn expected_children(node: &Node, expected: &[(&str, &str)]) -> Result<(), Diagn
             .children
             .iter()
             .zip(expected)
-            .any(|(n, &(ns, local))| !is(n, ns, local))
+            .any(|(n, &(ns, local))| !node_is(n, ns, local))
     {
         return Err(error(
             INVALID_STRUCTURE,
@@ -161,99 +364,47 @@ fn expected_children(node: &Node, expected: &[(&str, &str)]) -> Result<(), Diagn
     Ok(())
 }
 
-fn token(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn id(node: &Node) -> Result<String, Diagnostic> {
-    let id = token(required(node, None, "id")?);
-    if !ncname(&id) {
-        return Err(error(INVALID_STRUCTURE, "invalid XML ID", node.start.span));
-    }
-    Ok(id)
-}
-
 fn ncname(s: &str) -> bool {
     let mut it = s.chars();
     matches!(it.next(), Some(c) if c.is_alphabetic() || c == '_')
         && it.all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
-fn parse_root(root: &Node) -> Result<Instance, Diagnostic> {
-    if !is(root, XBRL_INSTANCE, "xbrl") {
-        return Err(error(INVALID_ROOT, "expected xbrli:xbrl", root.start.span));
+fn id_attr(start: &StartElement) -> Result<String, Diagnostic> {
+    let id = collapse(required(start, None, "id")?);
+    if !ncname(&id) {
+        return Err(error(INVALID_STRUCTURE, "invalid XML ID", start.span));
     }
-    only_whitespace(root)?;
-    let mut instance = Instance {
-        schema_refs: Vec::new(),
-        contexts: Vec::new(),
-        units: Vec::new(),
-        facts: Vec::new(),
-    };
-    let mut past_refs = false;
-    for node in &root.children {
-        if is(node, XBRL_LINKBASE, "schemaRef") {
-            if past_refs {
-                return Err(error(
-                    INVALID_STRUCTURE,
-                    "schemaRef must precede other root children",
-                    node.start.span,
-                ));
-            }
-            instance.schema_refs.push(schema_ref(root, node)?);
-        } else {
-            past_refs = true;
-            if is(node, XBRL_INSTANCE, "context") {
-                instance.contexts.push(context(node)?);
-            } else if is(node, XBRL_INSTANCE, "unit") {
-                instance.units.push(unit(node)?);
-            } else if node.start.name.namespace() == Some(XBRL_LINKBASE)
-                || node.start.name.namespace() == Some(XBRL_INSTANCE)
-            {
-                return Err(error(
-                    UNSUPPORTED,
-                    format!("unsupported root child {}", node.start.name.local_name()),
-                    node.start.span,
-                ));
-            } else {
-                instance.facts.push(fact(node)?);
-            }
-        }
-    }
-    if instance.schema_refs.is_empty() {
-        return Err(error(
-            INVALID_STRUCTURE,
-            "at least one schemaRef is required",
-            root.start.span,
-        ));
-    }
-    Ok(instance)
+    Ok(id)
 }
 
-fn schema_ref(root: &Node, node: &Node) -> Result<SchemaRef, Diagnostic> {
-    expected_children(node, &[])?;
-    if required(node, Some(XLINK), "type")? != "simple" {
+fn schema_ref(leaf: &Leaf, root_base: Option<&str>) -> Result<SchemaRef, Diagnostic> {
+    let start = &leaf.start;
+    if !is_blank(&leaf.text) {
+        return Err(error(
+            INVALID_STRUCTURE,
+            "unexpected character data",
+            start.span,
+        ));
+    }
+    if collapse(required(start, Some(XLINK), "type")?) != "simple" {
         return Err(error(
             INVALID_STRUCTURE,
             "schemaRef xlink:type must be simple",
-            node.start.span,
+            start.span,
         ));
     }
-    let href = required(node, Some(XLINK), "href")?;
-    Uri::parse(href)
-        .map_err(|_| error(INVALID_STRUCTURE, "invalid schemaRef URI", node.start.span))?;
-    let base_chain = [
-        attr(root, Some(XML_NAMESPACE), "base"),
-        attr(node, Some(XML_NAMESPACE), "base"),
-    ]
-    .into_iter()
-    .flatten()
-    .map(str::to_owned)
-    .collect();
+    let href = required(start, Some(XLINK), "href")?;
+    Uri::parse(href).map_err(|_| error(INVALID_STRUCTURE, "invalid schemaRef URI", start.span))?;
+    let base_chain = [root_base, attr(start, Some(XML_NAMESPACE), "base")]
+        .into_iter()
+        .flatten()
+        .map(str::to_owned)
+        .collect();
     Ok(SchemaRef {
         href: href.to_owned(),
         base_chain,
-        span: node.start.span,
+        span: start.span,
     })
 }
 
@@ -261,12 +412,12 @@ fn context(node: &Node) -> Result<Context, Diagnostic> {
     only_whitespace(node)?;
     if node.children.len() < 2
         || node.children.len() > 3
-        || !is(&node.children[0], XBRL_INSTANCE, "entity")
-        || !is(&node.children[1], XBRL_INSTANCE, "period")
+        || !node_is(&node.children[0], XBRL_INSTANCE, "entity")
+        || !node_is(&node.children[1], XBRL_INSTANCE, "period")
         || node
             .children
             .get(2)
-            .is_some_and(|n| !is(n, XBRL_INSTANCE, "scenario"))
+            .is_some_and(|n| !node_is(n, XBRL_INSTANCE, "scenario"))
     {
         return Err(error(
             INVALID_STRUCTURE,
@@ -278,11 +429,11 @@ fn context(node: &Node) -> Result<Context, Diagnostic> {
     only_whitespace(entity_node)?;
     if entity_node.children.is_empty()
         || entity_node.children.len() > 2
-        || !is(&entity_node.children[0], XBRL_INSTANCE, "identifier")
+        || !node_is(&entity_node.children[0], XBRL_INSTANCE, "identifier")
         || entity_node
             .children
             .get(1)
-            .is_some_and(|n| !is(n, XBRL_INSTANCE, "segment"))
+            .is_some_and(|n| !node_is(n, XBRL_INSTANCE, "segment"))
     {
         return Err(error(
             INVALID_STRUCTURE,
@@ -298,17 +449,18 @@ fn context(node: &Node) -> Result<Context, Diagnostic> {
             identifier.start.span,
         ));
     }
-    let scheme = token(required(identifier, None, "scheme")?);
-    if scheme.is_empty() {
+    let scheme = collapse(required(&identifier.start, None, "scheme")?);
+    if scheme.is_empty() || scheme.chars().any(char::is_whitespace) || Uri::parse(&scheme).is_err()
+    {
         return Err(error(
             INVALID_STRUCTURE,
-            "empty identifier scheme",
+            "identifier scheme must be a nonempty URI without whitespace",
             identifier.start.span,
         ));
     }
     let entity = Entity {
         scheme,
-        identifier: token(&identifier.text),
+        identifier: collapse(&identifier.text),
         segment: entity_node
             .children
             .get(1)
@@ -316,7 +468,7 @@ fn context(node: &Node) -> Result<Context, Diagnostic> {
             .transpose()?,
     };
     Ok(Context {
-        id: id(node)?,
+        id: id_attr(&node.start)?,
         entity,
         period: period(&node.children[1])?,
         scenario: node.children.get(2).map(extension_content).transpose()?,
@@ -377,11 +529,6 @@ fn extension_node(node: &Node) -> Result<ExtensionNode, Diagnostic> {
 
 fn period(node: &Node) -> Result<Period, Diagnostic> {
     only_whitespace(node)?;
-    let names: Vec<&str> = node
-        .children
-        .iter()
-        .map(|n| n.start.name.local_name())
-        .collect();
     if node
         .children
         .iter()
@@ -393,37 +540,24 @@ fn period(node: &Node) -> Result<Period, Diagnostic> {
             node.start.span,
         ));
     }
+    let names: Vec<&str> = node
+        .children
+        .iter()
+        .map(|n| n.start.name.local_name())
+        .collect();
     match names.as_slice() {
-        ["instant"] => Ok(Period::Instant(date(&node.children[0])?)),
+        ["instant"] => Ok(Period::Instant(date(&node.children[0])?.0)),
         ["forever"] => {
             expected_children(&node.children[0], &[])?;
             Ok(Period::Forever)
         }
         ["startDate", "endDate"] => {
-            let start = date(&node.children[0])?;
-            let end = date(&node.children[1])?;
-            let date_start = NaiveDate::parse_from_str(&start, "%Y-%m-%d");
-            let date_end = NaiveDate::parse_from_str(&end, "%Y-%m-%d");
-            let reversed = if let (Ok(s), Ok(e)) = (date_start, date_end) {
-                // A date-only end implies midnight of the following day (§4.7.2).
-                e < s
-            } else if let (Ok(s), Ok(e)) = (
-                DateTime::parse_from_rfc3339(&start),
-                DateTime::parse_from_rfc3339(&end),
-            ) {
-                e <= s
-            } else if let (Ok(s), Ok(e)) = (
-                NaiveDateTime::parse_from_str(&start, "%Y-%m-%dT%H:%M:%S%.f"),
-                NaiveDateTime::parse_from_str(&end, "%Y-%m-%dT%H:%M:%S%.f"),
-            ) {
-                e <= s
-            } else {
-                false // mixed timezone representations: comparison deferred to validation
-            };
-            if reversed {
+            let (start, start_t) = date(&node.children[0])?;
+            let (end, end_t) = date(&node.children[1])?;
+            if duration_is_reversed(&start_t, &end_t) {
                 return Err(error(
                     INVALID_PERIOD,
-                    "endDate does not follow startDate",
+                    "endDate must be later than startDate (XBRL 2.1 §4.7.2)",
                     node.start.span,
                 ));
             }
@@ -437,7 +571,7 @@ fn period(node: &Node) -> Result<Period, Diagnostic> {
     }
 }
 
-fn date(node: &Node) -> Result<String, Diagnostic> {
+fn date(node: &Node) -> Result<(String, Temporal), Diagnostic> {
     if !node.children.is_empty() {
         return Err(error(
             INVALID_PERIOD,
@@ -445,36 +579,29 @@ fn date(node: &Node) -> Result<String, Diagnostic> {
             node.start.span,
         ));
     }
-    let value = token(&node.text);
-    let zoned_date = value
-        .get(..10)
-        .zip(value.get(10..))
-        .is_some_and(|(day, zone)| {
-            NaiveDate::parse_from_str(day, "%Y-%m-%d").is_ok()
-                && !zone.is_empty()
-                && DateTime::parse_from_rfc3339(&format!("{day}T00:00:00{zone}")).is_ok()
-        });
-    let valid = zoned_date
-        || NaiveDate::parse_from_str(&value, "%Y-%m-%d").is_ok()
-        || NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S%.f").is_ok()
-        || DateTime::parse_from_rfc3339(&value).is_ok();
-    if !valid {
-        return Err(error(
+    let value = collapse(&node.text);
+    match Temporal::parse(&value) {
+        Ok(parsed) => Ok((value, parsed)),
+        Err(TemporalError::Invalid) => Err(error(
             INVALID_PERIOD,
-            format!("unsupported or invalid date/dateTime {value:?}"),
+            format!("invalid xsd:date/dateTime {value:?}"),
             node.start.span,
-        ));
+        )),
+        Err(TemporalError::Unsupported) => Err(error(
+            UNSUPPORTED,
+            format!("date/dateTime {value:?} is outside the supported year range"),
+            node.start.span,
+        )),
     }
-    Ok(value)
 }
 
 fn unit(node: &Node) -> Result<Unit, Diagnostic> {
     only_whitespace(node)?;
-    let measures = if node
-        .children
-        .iter()
-        .all(|n| is(n, XBRL_INSTANCE, "measure"))
-        && !node.children.is_empty()
+    let measures = if !node.children.is_empty()
+        && node
+            .children
+            .iter()
+            .all(|n| node_is(n, XBRL_INSTANCE, "measure"))
     {
         UnitMeasures::Simple(measures(node)?)
     } else {
@@ -493,7 +620,7 @@ fn unit(node: &Node) -> Result<Unit, Diagnostic> {
         }
     };
     Ok(Unit {
-        id: id(node)?,
+        id: id_attr(&node.start)?,
         measures,
         span: node.start.span,
     })
@@ -505,7 +632,7 @@ fn measures(node: &Node) -> Result<Vec<QName>, Diagnostic> {
         || node
             .children
             .iter()
-            .any(|n| !is(n, XBRL_INSTANCE, "measure"))
+            .any(|n| !node_is(n, XBRL_INSTANCE, "measure"))
     {
         return Err(error(
             INVALID_STRUCTURE,
@@ -513,10 +640,16 @@ fn measures(node: &Node) -> Result<Vec<QName>, Diagnostic> {
             node.start.span,
         ));
     }
-    node.children.iter().map(measure).collect()
+    Ok(node
+        .children
+        .iter()
+        .map(|n| n.measure.clone().expect("measures resolved at end tag"))
+        .collect())
 }
 
-fn measure(node: &Node) -> Result<QName, Diagnostic> {
+/// Resolves a measure's QName content against the bindings in scope at its end
+/// tag (the measure's own declarations, then its ancestors').
+fn measure_qname(node: &Node, scope: &[(Option<String>, String)]) -> Result<QName, Diagnostic> {
     if !node.children.is_empty() {
         return Err(error(
             INVALID_MEASURE,
@@ -524,7 +657,7 @@ fn measure(node: &Node) -> Result<QName, Diagnostic> {
             node.start.span,
         ));
     }
-    let value = token(&node.text);
+    let value = collapse(&node.text);
     let (prefix, local) = match value.split_once(':') {
         Some((p, l)) if ncname(p) && ncname(l) => (Some(p), l),
         None if ncname(&value) => (None, value.as_str()),
@@ -536,12 +669,11 @@ fn measure(node: &Node) -> Result<QName, Diagnostic> {
             ));
         }
     };
-    let namespace = node
-        .bindings
+    let namespace = scope
         .iter()
         .rev()
-        .find(|b| b.prefix() == prefix)
-        .map(NamespaceBinding::uri)
+        .find(|(p, _)| p.as_deref() == prefix)
+        .map(|(_, uri)| uri.as_str())
         .or_else(|| (prefix == Some("xml")).then_some(XML_NAMESPACE));
     let Some(namespace) = namespace.filter(|n| !n.is_empty()) else {
         return Err(error(
@@ -554,130 +686,121 @@ fn measure(node: &Node) -> Result<QName, Diagnostic> {
         .map_err(|_| error(INVALID_MEASURE, "invalid measure QName", node.start.span))
 }
 
-fn fact(node: &Node) -> Result<Fact, Diagnostic> {
-    if !node.children.is_empty() {
-        return Err(error(
-            UNSUPPORTED,
-            "tuple or complex fact content requires taxonomy type information",
-            node.start.span,
-        ));
-    }
-    let concept = node.start.name.to_qname().ok_or_else(|| {
+fn fact(leaf: &Leaf) -> Result<Fact, Diagnostic> {
+    let start = &leaf.start;
+    let concept = start.name.to_qname().ok_or_else(|| {
         error(
             UNSUPPORTED,
             "fact concept has no usable namespace",
-            node.start.span,
+            start.span,
         )
     })?;
-    let context_ref = token(required(node, None, "contextRef")?);
+    let context_ref = collapse(required(start, None, "contextRef")?);
     if !ncname(&context_ref) {
         return Err(error(
             INVALID_STRUCTURE,
             "invalid contextRef IDREF",
-            node.start.span,
+            start.span,
         ));
     }
-    let unit_ref = attr(node, None, "unitRef").map(token);
+    let unit_ref = attr(start, None, "unitRef").map(collapse);
     if unit_ref.as_ref().is_some_and(|s| !ncname(s)) {
         return Err(error(
             INVALID_STRUCTURE,
             "invalid unitRef IDREF",
-            node.start.span,
+            start.span,
         ));
     }
-    let accuracy = accuracy(node)?;
-    let nil = match attr(
-        node,
-        Some("http://www.w3.org/2001/XMLSchema-instance"),
-        "nil",
-    ) {
+    let accuracy = accuracy(start)?;
+    let nil = match attr(start, Some(XSI), "nil").map(collapse).as_deref() {
         Some("true" | "1") => true,
         Some("false" | "0") | None => false,
         Some(_) => {
             return Err(error(
                 INVALID_STRUCTURE,
                 "invalid xsi:nil boolean",
-                node.start.span,
+                start.span,
             ));
         }
     };
-    if nil && (accuracy.is_some() || !node.text.trim().is_empty()) {
+    if nil && (accuracy.is_some() || !is_blank(&leaf.text)) {
         return Err(error(
             INVALID_STRUCTURE,
             "nil item cannot have accuracy or content",
-            node.start.span,
+            start.span,
         ));
     }
-    let id = attr(node, None, "id").map(token);
+    let id = attr(start, None, "id").map(collapse);
     if id.as_ref().is_some_and(|s| !ncname(s)) {
-        return Err(error(INVALID_STRUCTURE, "invalid fact ID", node.start.span));
+        return Err(error(INVALID_STRUCTURE, "invalid fact ID", start.span));
     }
     Ok(Fact {
         concept,
         context_ref,
         unit_ref,
         accuracy,
-        value: if nil { None } else { Some(node.text.clone()) },
+        value: if nil { None } else { Some(leaf.text.clone()) },
         id,
-        span: node.start.span,
+        span: start.span,
     })
 }
 
-fn accuracy(node: &Node) -> Result<Option<Accuracy>, Diagnostic> {
-    let decimals = attr(node, None, "decimals");
-    let precision = attr(node, None, "precision");
-    match (decimals, precision) {
+fn accuracy(start: &StartElement) -> Result<Option<Accuracy>, Diagnostic> {
+    let decimals = attr(start, None, "decimals").map(collapse);
+    let precision = attr(start, None, "precision").map(collapse);
+    match (decimals.as_deref(), precision.as_deref()) {
         (Some(_), Some(_)) => Err(error(
             INVALID_ACCURACY,
             "decimals and precision are mutually exclusive",
-            node.start.span,
+            start.span,
         )),
         (None, None) => Ok(None),
-        (Some(value), None) if value.trim() == "INF" => Ok(Some(Accuracy::Infinite)),
-        (None, Some(value)) if value.trim() == "INF" => Ok(Some(Accuracy::Infinite)),
-        (Some(value), None) => {
-            let v = value.trim();
-            if !signed_digits(v) {
-                return Err(error(
+        (Some("INF"), None) | (None, Some("INF")) => Ok(Some(Accuracy::Infinite)),
+        (Some(v), None) => {
+            let digits = xsd_integer(v).ok_or_else(|| {
+                error(
                     INVALID_ACCURACY,
                     "decimals must be an integer or INF",
-                    node.start.span,
-                ));
-            }
-            let parsed = v.parse::<i64>().map_err(|_| {
+                    start.span,
+                )
+            })?;
+            let parsed = digits.parse::<i64>().map_err(|_| {
                 error(
                     UNSUPPORTED,
                     "decimals integer exceeds i64 range",
-                    node.start.span,
+                    start.span,
                 )
             })?;
             Ok(Some(Accuracy::Decimals(parsed)))
         }
-        (None, Some(value)) => {
-            let v = value.trim();
-            if !unsigned_digits(v) {
-                return Err(error(
-                    INVALID_ACCURACY,
-                    "precision must be a non-negative integer or INF",
-                    node.start.span,
-                ));
-            }
-            let parsed = v.trim_start_matches('+').parse::<u64>().map_err(|_| {
-                error(
-                    UNSUPPORTED,
-                    "precision integer exceeds u64 range",
-                    node.start.span,
-                )
-            })?;
+        (None, Some(v)) => {
+            let digits = xsd_integer(v)
+                .filter(|d| !d.starts_with('-') || d[1..].bytes().all(|b| b == b'0'))
+                .ok_or_else(|| {
+                    error(
+                        INVALID_ACCURACY,
+                        "precision must be a non-negative integer or INF",
+                        start.span,
+                    )
+                })?;
+            let parsed = digits
+                .trim_start_matches(['+', '-'])
+                .parse::<u64>()
+                .map_err(|_| {
+                    error(
+                        UNSUPPORTED,
+                        "precision integer exceeds u64 range",
+                        start.span,
+                    )
+                })?;
             Ok(Some(Accuracy::Precision(parsed)))
         }
     }
 }
 
-fn unsigned_digits(value: &str) -> bool {
-    let value = value.strip_prefix('+').unwrap_or(value);
-    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
-}
-fn signed_digits(value: &str) -> bool {
-    unsigned_digits(value.strip_prefix('-').unwrap_or(value))
+/// XSD `integer` lexical form: one optional sign followed by one or more
+/// ASCII digits. Returns the input when valid.
+fn xsd_integer(value: &str) -> Option<&str> {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(value)
 }
