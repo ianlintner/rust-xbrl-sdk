@@ -19,6 +19,11 @@
 //!   declarations of each open element and shrinks at its end tag. Measure
 //!   QNames are resolved at the measure's end tag against that stack, so no
 //!   per-element copy of in-scope bindings exists.
+//! * Namespace URIs in the typed model (`QName`, `ResolvedName`) are shared
+//!   [`std::sync::Arc<str>`] allocations, so a long root-declared URI is stored
+//!   once however many facts, measures or segment children reference it, rather
+//!   than being copied once per node (which previously amplified RSS by up to
+//!   thousands of times).
 //! * The number of elements is capped by [`Limits::max_instance_elements`]
 //!   (reported as [`LIMIT_ELEMENTS`]); document bytes, depth, attribute and
 //!   token sizes are capped by the reader.
@@ -29,10 +34,12 @@
 use std::collections::HashSet;
 use std::io::Read;
 
+use std::sync::Arc;
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
 use xbrl_core::instance::{
     Accuracy, Context, Entity, ExtensionNode, Fact, Instance, Period, SchemaRef, Unit, UnitMeasures,
 };
+
 use xbrl_core::namespaces::{XBRL_INSTANCE, XBRL_LINKBASE, XLINK};
 use xbrl_core::qname::QName;
 
@@ -105,7 +112,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
     let mut elements: u32 = 0;
     let mut depth: usize = 0;
     // Shared in-scope namespace bindings and the length to restore per element.
-    let mut scope: Vec<(Option<String>, String)> = Vec::new();
+    let mut scope: Vec<(Option<String>, Arc<str>)> = Vec::new();
     let mut marks: Vec<usize> = Vec::new();
     let mut stack: Vec<Node> = Vec::new();
     let mut leaf: Option<Leaf> = None;
@@ -133,10 +140,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                 }
                 marks.push(scope.len());
                 for binding in &start.namespaces {
-                    scope.push((
-                        binding.prefix().map(str::to_owned),
-                        binding.uri().to_owned(),
-                    ));
+                    scope.push((binding.prefix().map(str::to_owned), binding.uri_shared()));
                 }
                 depth += 1;
                 match depth {
@@ -229,9 +233,21 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                     2 => {
                         if let Some(done) = leaf.take() {
                             match done.kind {
-                                LeafKind::SchemaRef => instance
-                                    .schema_refs
-                                    .push(schema_ref(&done, root_base.as_deref())?),
+                                LeafKind::SchemaRef => {
+                                    if let Some(id) = attr(&done.start, None, "id").map(collapse) {
+                                        if !ncname(&id) {
+                                            return Err(error(
+                                                INVALID_STRUCTURE,
+                                                "invalid schemaRef ID",
+                                                done.start.span,
+                                            ));
+                                        }
+                                        claim(&mut ids, &id, done.start.span)?;
+                                    }
+                                    instance
+                                        .schema_refs
+                                        .push(schema_ref(&done, root_base.as_deref())?);
+                                }
                                 LeafKind::Fact => {
                                     let fact = fact(&done)?;
                                     if let Some(id) = &fact.id {
@@ -649,7 +665,7 @@ fn measures(node: &Node) -> Result<Vec<QName>, Diagnostic> {
 
 /// Resolves a measure's QName content against the bindings in scope at its end
 /// tag (the measure's own declarations, then its ancestors').
-fn measure_qname(node: &Node, scope: &[(Option<String>, String)]) -> Result<QName, Diagnostic> {
+fn measure_qname(node: &Node, scope: &[(Option<String>, Arc<str>)]) -> Result<QName, Diagnostic> {
     if !node.children.is_empty() {
         return Err(error(
             INVALID_MEASURE,
@@ -673,8 +689,8 @@ fn measure_qname(node: &Node, scope: &[(Option<String>, String)]) -> Result<QNam
         .iter()
         .rev()
         .find(|(p, _)| p.as_deref() == prefix)
-        .map(|(_, uri)| uri.as_str())
-        .or_else(|| (prefix == Some("xml")).then_some(XML_NAMESPACE));
+        .map(|(_, uri)| Arc::clone(uri))
+        .or_else(|| (prefix == Some("xml")).then(|| Arc::from(XML_NAMESPACE)));
     let Some(namespace) = namespace.filter(|n| !n.is_empty()) else {
         return Err(error(
             INVALID_MEASURE,
@@ -682,7 +698,7 @@ fn measure_qname(node: &Node, scope: &[(Option<String>, String)]) -> Result<QNam
             node.start.span,
         ));
     };
-    QName::new(prefix, namespace, local)
+    QName::from_shared(prefix, namespace, local)
         .map_err(|_| error(INVALID_MEASURE, "invalid measure QName", node.start.span))
 }
 
@@ -723,7 +739,7 @@ fn fact(leaf: &Leaf) -> Result<Fact, Diagnostic> {
             ));
         }
     };
-    if nil && (accuracy.is_some() || !is_blank(&leaf.text)) {
+    if nil && (accuracy.is_some() || !leaf.text.is_empty()) {
         return Err(error(
             INVALID_STRUCTURE,
             "nil item cannot have accuracy or content",

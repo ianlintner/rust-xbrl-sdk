@@ -14,6 +14,7 @@
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// Reason a [`QName`] could not be constructed or parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +93,7 @@ impl Error for QNameError {}
 #[derive(Debug, Clone)]
 pub struct QName {
     prefix: Option<String>,
-    namespace: String,
+    namespace: Arc<str>,
     local_name: String,
 }
 
@@ -125,6 +126,22 @@ impl QName {
         local_name: &str,
     ) -> Result<Self, QNameError> {
         validate_namespace(namespace)?;
+        Self::from_shared(prefix, Arc::from(namespace), local_name)
+    }
+
+    /// Like [`QName::new`], but shares an already-allocated namespace URI
+    /// instead of copying it, so many names in one document reference a single
+    /// allocation.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`QName::new`].
+    pub fn from_shared(
+        prefix: Option<&str>,
+        namespace: Arc<str>,
+        local_name: &str,
+    ) -> Result<Self, QNameError> {
+        validate_namespace(&namespace)?;
         validate_local_name(local_name)?;
         if let Some(prefix) = prefix
             && (prefix.is_empty() || prefix.contains(':'))
@@ -135,7 +152,7 @@ impl QName {
         }
         Ok(Self {
             prefix: prefix.map(str::to_owned),
-            namespace: namespace.to_owned(),
+            namespace,
             local_name: local_name.to_owned(),
         })
     }
@@ -185,7 +202,7 @@ impl QName {
     ///
     /// Returns [`QNameError::InvalidPrefix`] when `prefix` is empty or contains `:`.
     pub fn with_prefix(&self, prefix: &str) -> Result<Self, QNameError> {
-        Self::new(Some(prefix), &self.namespace, &self.local_name)
+        Self::from_shared(Some(prefix), Arc::clone(&self.namespace), &self.local_name)
     }
 
     /// Renders Clark notation: `{namespace}local`.

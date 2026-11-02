@@ -300,3 +300,69 @@ fn official_suite_extraction_smoke_when_explicitly_supplied() {
         assert_eq!(err.rule().as_str(), expected, "{file}: {err}");
     }
 }
+
+#[test]
+fn namespace_uris_are_shared_not_copied_per_node() {
+    // B1': a long root-declared URI must be one allocation however many facts,
+    // measures and segment children reference it.
+    let uri = format!("http://example.com/{}", "a".repeat(60_000));
+    let mut xml = format!(
+        "<xbrli:xbrl xmlns:xbrli=\"http://www.xbrl.org/2003/instance\" \
+         xmlns:iso=\"http://www.xbrl.org/2003/iso4217\" xmlns:e=\"{uri}\" \
+         xmlns:link=\"http://www.xbrl.org/2003/linkbase\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\
+         <link:schemaRef xlink:type=\"simple\" xlink:href=\"t.xsd\"/>"
+    );
+    xml.push_str(
+        "<xbrli:context id=\"c\"><xbrli:entity><xbrli:identifier scheme=\"http://s\">A\
+         </xbrli:identifier><xbrli:segment><e:x/><e:x/></xbrli:segment></xbrli:entity>\
+         <xbrli:period><xbrli:instant>2025-12-31</xbrli:instant></xbrli:period></xbrli:context>\
+         <xbrli:unit id=\"u\"><xbrli:measure>iso:USD</xbrli:measure></xbrli:unit>",
+    );
+    for _ in 0..50 {
+        xml.push_str("<e:f contextRef=\"c\" unitRef=\"u\" decimals=\"0\">1</e:f>");
+    }
+    xml.push_str("</xbrli:xbrl>");
+    let instance = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    assert_eq!(instance.facts.len(), 50);
+    let first = instance.facts[0].concept.namespace().as_ptr();
+    assert!(
+        instance
+            .facts
+            .iter()
+            .all(|f| f.concept.namespace().as_ptr() == first),
+        "fact namespaces must share one allocation"
+    );
+    let seg = instance.contexts[0].entity.segment.as_ref().unwrap();
+    assert_eq!(seg[0].name.namespace().as_ptr(), first);
+    assert_eq!(seg[1].name.namespace().as_ptr(), first);
+}
+
+fn minimal(extra_root_child: &str, fact: &str) -> String {
+    format!(
+        "<x:xbrl xmlns:x=\"http://www.xbrl.org/2003/instance\" \
+         xmlns:link=\"http://www.xbrl.org/2003/linkbase\" \
+         xmlns:xlink=\"http://www.w3.org/1999/xlink\" \
+         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
+         xmlns:e=\"http://example.com/e\">\
+         <link:schemaRef xlink:type=\"simple\" xlink:href=\"t.xsd\" id=\"dup\"/>\
+         <x:context id=\"c\"><x:entity><x:identifier scheme=\"http://s\">A</x:identifier></x:entity>\
+         <x:period><x:instant>2025-12-31</x:instant></x:period></x:context>\
+         {extra_root_child}{fact}</x:xbrl>"
+    )
+}
+
+#[test]
+fn schema_ref_id_participates_in_id_uniqueness() {
+    let xml = minimal("", "<e:f contextRef=\"c\" id=\"dup\">1</e:f>");
+    let err = parse_instance(xml.as_bytes(), Limits::default()).unwrap_err();
+    assert!(err.message().contains("duplicate XML ID"), "{err:?}");
+}
+
+#[test]
+fn nil_fact_rejects_whitespace_content() {
+    let xml = minimal("", "<e:f contextRef=\"c\" xsi:nil=\"true\"> </e:f>");
+    let err = parse_instance(xml.as_bytes(), Limits::default()).unwrap_err();
+    assert!(err.message().contains("nil item"), "{err:?}");
+    let ok = minimal("", "<e:f contextRef=\"c\" xsi:nil=\"true\"/>");
+    assert!(parse_instance(ok.as_bytes(), Limits::default()).is_ok());
+}

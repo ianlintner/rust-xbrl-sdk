@@ -23,11 +23,13 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufReader, Read};
+use std::sync::Arc;
 
 use quick_xml::Error as XmlError;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
+
 use xbrl_core::qname::QName;
 
 use crate::limits::Limits;
@@ -41,7 +43,7 @@ pub const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
 /// An element or attribute name resolved against the in-scope namespaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedName {
-    namespace: Option<String>,
+    namespace: Option<Arc<str>>,
     local_name: String,
     prefix: Option<String>,
 }
@@ -69,7 +71,12 @@ impl ResolvedName {
     /// namespace (a `QName` always carries a namespace URI).
     #[must_use]
     pub fn to_qname(&self) -> Option<QName> {
-        QName::new(self.prefix(), self.namespace()?, &self.local_name).ok()
+        QName::from_shared(
+            self.prefix(),
+            Arc::clone(self.namespace.as_ref()?),
+            &self.local_name,
+        )
+        .ok()
     }
 }
 
@@ -77,7 +84,7 @@ impl ResolvedName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespaceBinding {
     prefix: Option<String>,
-    uri: String,
+    uri: Arc<str>,
 }
 
 impl NamespaceBinding {
@@ -91,6 +98,12 @@ impl NamespaceBinding {
     #[must_use]
     pub fn uri(&self) -> &str {
         &self.uri
+    }
+
+    /// The namespace URI as a shared allocation (cheap to clone).
+    #[must_use]
+    pub fn uri_shared(&self) -> Arc<str> {
+        Arc::clone(&self.uri)
     }
 }
 
@@ -182,7 +195,7 @@ pub struct XmlReader<R: Read> {
     limits: Limits,
     buf: Vec<u8>,
     /// In-scope namespace bindings, innermost last. `None` key = default namespace.
-    bindings: Vec<(Option<String>, String)>,
+    bindings: Vec<(Option<String>, Arc<str>)>,
     /// Open elements: resolved name plus the `bindings` length to restore on close.
     open: Vec<(ResolvedName, usize)>,
     queue: VecDeque<XmlEvent>,
@@ -451,11 +464,11 @@ impl<R: Read> XmlReader<R> {
         }
         for binding in &declarations {
             self.bindings
-                .push((binding.prefix.clone(), binding.uri.clone()));
+                .push((binding.prefix.clone(), Arc::clone(&binding.uri)));
         }
         let name = self.resolve_name(&element_name, true)?;
         let mut attributes = Vec::with_capacity(plain.len());
-        let mut expanded: HashSet<(Option<String>, String)> = HashSet::new();
+        let mut expanded: HashSet<(Option<Arc<str>>, String)> = HashSet::new();
         for (key, value) in plain {
             let resolved = self.resolve_name(&key, false)?;
             if !expanded.insert((resolved.namespace.clone(), resolved.local_name.clone())) {
@@ -530,7 +543,10 @@ impl<R: Read> XmlReader<R> {
                 "the namespace {XML_NAMESPACE} may only be bound to the xml prefix"
             )));
         }
-        Ok(NamespaceBinding { prefix, uri })
+        Ok(NamespaceBinding {
+            prefix,
+            uri: Arc::from(uri),
+        })
     }
 
     /// Resolves a lexical name. `is_element` selects whether the default
@@ -555,22 +571,22 @@ impl<R: Read> XmlReader<R> {
             None => None,
         };
         Ok(ResolvedName {
-            namespace: namespace.filter(|uri| !uri.is_empty()).map(str::to_owned),
+            namespace: namespace.filter(|uri| !uri.is_empty()),
             local_name: local.to_owned(),
             prefix: prefix.map(str::to_owned),
         })
     }
 
-    fn lookup(&self, prefix: Option<&str>) -> Option<&str> {
+    fn lookup(&self, prefix: Option<&str>) -> Option<Arc<str>> {
         let found = self
             .bindings
             .iter()
             .rev()
             .find(|(bound, _)| bound.as_deref() == prefix)
-            .map(|(_, uri)| uri.as_str());
+            .map(|(_, uri)| Arc::clone(uri));
         match (found, prefix) {
-            (None, Some("xml")) => Some(XML_NAMESPACE),
-            _ => found,
+            (None, Some("xml")) => Some(Arc::from(XML_NAMESPACE)),
+            (found, _) => found,
         }
     }
 
