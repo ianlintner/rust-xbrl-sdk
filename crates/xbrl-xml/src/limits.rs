@@ -23,6 +23,9 @@ pub struct Limits {
     /// Maximum namespace bindings in scope at once, inherited ones included.
     /// Default: 512.
     pub max_namespace_bindings: u32,
+    /// Maximum elements the instance extractor will process (all elements,
+    /// not only facts). Default: 1,000,000. Reader-only callers ignore it.
+    pub max_instance_elements: u32,
 }
 
 impl Default for Limits {
@@ -33,6 +36,7 @@ impl Default for Limits {
             max_attributes_per_element: 512,
             max_token_bytes: 8 * 1024 * 1024,
             max_namespace_bindings: 512,
+            max_instance_elements: 1_000_000,
         }
     }
 }

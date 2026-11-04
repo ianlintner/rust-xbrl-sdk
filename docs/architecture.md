@@ -1,17 +1,16 @@
 # Architecture and dependency boundaries
 
-Status: **scaffold baseline** (PLAN.md milestone 1). Only `xbrl-core` contains
-code; the other six crates are members of the Cargo workspace with declared
-dependency edges and no implementation. This document is the contract those
-crates are expected to keep as milestones land, so that parsing, validation and
-rendering do not grow into one another.
+Status: **milestones 1–3 in progress** (PLAN.md). `xbrl-core` holds the typed
+syntax model and `xbrl-xml` provides bounded XML/instance extraction; other
+crates remain scaffolded. This is not DTS validation or XBRL conformance.
+The contract below governs future phases.
 
 ## Crates and their allowed dependencies
 
 | Crate | May depend on | Milestone |
 |---|---|---|
-| `xbrl-core` | — (workspace root of the graph) | 1 |
-| `xbrl-xml` | `xbrl-core` | 2 |
+| `xbrl-core` | — (workspace root of the graph) | 1, 3 |
+| `xbrl-xml` | `xbrl-core` (external quick-xml, chrono) | 2, 3 |
 | `xbrl-taxonomy` | `xbrl-core`, `xbrl-xml` | 4 |
 | `xbrl-inline` | `xbrl-core`, `xbrl-xml` | post-MVP |
 | `xbrl-validate` | `xbrl-core`, `xbrl-xml`, `xbrl-taxonomy` | 5 |

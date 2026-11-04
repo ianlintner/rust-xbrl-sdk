@@ -23,12 +23,14 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufReader, Read};
+use std::sync::Arc;
 
 use quick_xml::Error as XmlError;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
-use xbrl_core::qname::QName;
+
+use xbrl_core::qname::{QName, validate_namespace};
 
 use crate::limits::Limits;
 use crate::rules;
@@ -41,7 +43,7 @@ pub const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
 /// An element or attribute name resolved against the in-scope namespaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedName {
-    namespace: Option<String>,
+    namespace: Option<Arc<str>>,
     local_name: String,
     prefix: Option<String>,
 }
@@ -69,7 +71,24 @@ impl ResolvedName {
     /// namespace (a `QName` always carries a namespace URI).
     #[must_use]
     pub fn to_qname(&self) -> Option<QName> {
-        QName::new(self.prefix(), self.namespace()?, &self.local_name).ok()
+        // The URI was validated when its declaration was read: no rescan.
+        QName::from_validated_shared(
+            self.prefix(),
+            Arc::clone(self.namespace.as_ref()?),
+            &self.local_name,
+        )
+        .ok()
+    }
+}
+
+/// Equal namespaces by allocation identity. Every namespace URI the reader
+/// produces is interned per document (`XmlReader::interned`), so equal
+/// content implies the same `Arc` and no URI text is ever compared.
+fn same_namespace(a: Option<&Arc<str>>, b: Option<&Arc<str>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
     }
 }
 
@@ -77,7 +96,7 @@ impl ResolvedName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamespaceBinding {
     prefix: Option<String>,
-    uri: String,
+    uri: Arc<str>,
 }
 
 impl NamespaceBinding {
@@ -91,6 +110,12 @@ impl NamespaceBinding {
     #[must_use]
     pub fn uri(&self) -> &str {
         &self.uri
+    }
+
+    /// The namespace URI as a shared allocation (cheap to clone).
+    #[must_use]
+    pub fn uri_shared(&self) -> Arc<str> {
+        Arc::clone(&self.uri)
     }
 }
 
@@ -182,7 +207,13 @@ pub struct XmlReader<R: Read> {
     limits: Limits,
     buf: Vec<u8>,
     /// In-scope namespace bindings, innermost last. `None` key = default namespace.
-    bindings: Vec<(Option<String>, String)>,
+    bindings: Vec<(Option<String>, Arc<str>)>,
+    /// Per-document namespace URI interner: one validated `Arc` per distinct
+    /// URI, so equality is pointer equality and validation runs once per
+    /// distinct URI.
+    interned: HashSet<Arc<str>>,
+    /// Interned `XML_NAMESPACE`, bound implicitly to the `xml` prefix.
+    xml_namespace: Arc<str>,
     /// Open elements: resolved name plus the `bindings` length to restore on close.
     open: Vec<(ResolvedName, usize)>,
     queue: VecDeque<XmlEvent>,
@@ -210,11 +241,14 @@ impl<R: Read> XmlReader<R> {
         config.expand_empty_elements = false;
         config.check_end_names = true;
         config.check_comments = true;
+        let xml_namespace: Arc<str> = Arc::from(XML_NAMESPACE);
         Self {
             inner,
             limits,
             buf: Vec::new(),
             bindings: Vec::new(),
+            interned: HashSet::from([Arc::clone(&xml_namespace)]),
+            xml_namespace,
             open: Vec::new(),
             queue: VecDeque::new(),
             text: String::new(),
@@ -451,14 +485,19 @@ impl<R: Read> XmlReader<R> {
         }
         for binding in &declarations {
             self.bindings
-                .push((binding.prefix.clone(), binding.uri.clone()));
+                .push((binding.prefix.clone(), Arc::clone(&binding.uri)));
         }
         let name = self.resolve_name(&element_name, true)?;
         let mut attributes = Vec::with_capacity(plain.len());
-        let mut expanded: HashSet<(Option<String>, String)> = HashSet::new();
+        // Duplicate detection compares namespaces by identity first, so a long
+        // URI is never hashed per attribute. `max_attributes_per_element`
+        // bounds the quadratic scan.
         for (key, value) in plain {
             let resolved = self.resolve_name(&key, false)?;
-            if !expanded.insert((resolved.namespace.clone(), resolved.local_name.clone())) {
+            if attributes.iter().any(|seen: &Attribute| {
+                seen.name.local_name == resolved.local_name
+                    && same_namespace(seen.name.namespace.as_ref(), resolved.namespace.as_ref())
+            }) {
                 return Err(self.error(
                     rules::DUPLICATE_ATTRIBUTE,
                     format!("two attributes expand to the same name {key:?}"),
@@ -501,7 +540,7 @@ impl<R: Read> XmlReader<R> {
 
     /// Validates a namespace declaration (Namespaces §3, §6.1 for 1.0).
     fn validated_binding(
-        &self,
+        &mut self,
         prefix: Option<String>,
         uri: String,
     ) -> Result<NamespaceBinding, Diagnostic> {
@@ -530,6 +569,19 @@ impl<R: Read> XmlReader<R> {
                 "the namespace {XML_NAMESPACE} may only be bound to the xml prefix"
             )));
         }
+        // Validate once per declaration; names resolved against it reuse the
+        // Arc without rescanning (`xmlns=""` resets the default namespace).
+        let uri = if let Some(existing) = self.interned.get(uri.as_str()) {
+            Arc::clone(existing)
+        } else {
+            if !uri.is_empty() {
+                validate_namespace(&uri)
+                    .map_err(|e| invalid(format!("invalid namespace URI {uri:?}: {e}")))?;
+            }
+            let shared: Arc<str> = Arc::from(uri);
+            self.interned.insert(Arc::clone(&shared));
+            shared
+        };
         Ok(NamespaceBinding { prefix, uri })
     }
 
@@ -555,22 +607,22 @@ impl<R: Read> XmlReader<R> {
             None => None,
         };
         Ok(ResolvedName {
-            namespace: namespace.filter(|uri| !uri.is_empty()).map(str::to_owned),
+            namespace: namespace.filter(|uri| !uri.is_empty()),
             local_name: local.to_owned(),
             prefix: prefix.map(str::to_owned),
         })
     }
 
-    fn lookup(&self, prefix: Option<&str>) -> Option<&str> {
+    fn lookup(&self, prefix: Option<&str>) -> Option<Arc<str>> {
         let found = self
             .bindings
             .iter()
             .rev()
             .find(|(bound, _)| bound.as_deref() == prefix)
-            .map(|(_, uri)| uri.as_str());
+            .map(|(_, uri)| Arc::clone(uri));
         match (found, prefix) {
-            (None, Some("xml")) => Some(XML_NAMESPACE),
-            _ => found,
+            (None, Some("xml")) => Some(Arc::clone(&self.xml_namespace)),
+            (found, _) => found,
         }
     }
 

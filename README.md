@@ -1,6 +1,6 @@
 # Rust XBRL SDK
 
-A pure-Rust, headless XBRL SDK and toolchain for parsing, validating, querying, authoring, and rendering XBRL reports. **Status: planning/scaffold; not yet a conforming parser or validator.** See [PLAN.md](PLAN.md) for phased scope and verifiable milestones.
+A pure-Rust, headless XBRL SDK and toolchain for parsing, validating, querying, authoring, and rendering XBRL reports. **Status: bounded XML reading and XBRL 2.1 instance syntax extraction implemented; not a conforming parser or validator.** See [PLAN.md](PLAN.md) for phased scope and verifiable milestones.
 
 The first release targets XBRL 2.1 instances, common taxonomies/linkbases, core diagnostics, headless rendering, and a CLI. Dimensions, Inline XBRL, OIM, Formula, and regulatory profiles are later milestones. Unsupported standards must be reported as unsupported, not silently accepted.
 
@@ -12,15 +12,17 @@ The workspace (`rust-toolchain.toml` pins the exact toolchain and components) ha
 
 | Crate | Responsibility | Baseline state |
 |---|---|---|
-| `xbrl-core` | Typed model: qualified names, XBRL namespaces, diagnostics | QName + diagnostic envelope implemented |
-| `xbrl-xml` | Bounded, namespace-aware XBRL 2.1 XML reading | Scaffold, no parser |
+| `xbrl-core` | Typed model: qualified names, instance facts/contexts/units, diagnostics | Syntax model implemented; no DTS validation |
+| `xbrl-xml` | Bounded, namespace-aware XBRL 2.1 XML reading/extraction | Supported instance subset; no conformance claim |
 | `xbrl-taxonomy` | DTS resolution, schemas, concepts, linkbases | Scaffold |
 | `xbrl-inline` | Inline XBRL (iXBRL) extraction | Scaffold |
 | `xbrl-validate` | Core rule engine and profiles | Scaffold |
 | `xbrl-render` | Headless text/HTML/CSV rendering | Scaffold |
 | `xbrl-cli` | `xbrl` binary (`--help`, `--version` only) | Scaffold |
 
-"Scaffold" means the crate is a workspace member with pinned dependency edges and no implementation; it exposes no items and cannot report a passing result it did not compute. The `parse`, `validate` and `render` subcommands of `xbrl` are recognised and exit `3` (not implemented) rather than printing an empty success.
+`xbrl-core` and `xbrl-xml` expose the supported instance syntax subset. The remaining
+"Scaffold" crates are workspace members with pinned dependency edges and no implementation;
+they expose no items and cannot report a passing result they did not compute. The `parse`, `validate` and `render` subcommands of `xbrl` are recognised and exit `3` (not implemented) rather than printing an empty success.
 
 ## Commands
 
