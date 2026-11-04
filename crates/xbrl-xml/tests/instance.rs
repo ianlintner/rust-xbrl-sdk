@@ -366,3 +366,68 @@ fn nil_fact_rejects_whitespace_content() {
     let ok = minimal("", "<e:f contextRef=\"c\" xsi:nil=\"true\"/>");
     assert!(parse_instance(ok.as_bytes(), Limits::default()).is_ok());
 }
+
+#[test]
+fn id_uses_xml_ncname_character_classes() {
+    for (id, ok) in [
+        ("a\u{B7}b", true),
+        ("\u{6E2C}x", true),
+        ("a\u{B2}", false),
+        ("\u{B7}a", false),
+        ("1a", false),
+    ] {
+        let xml = minimal("", &format!("<e:f contextRef=\"c\" id=\"{id}\">1</e:f>"));
+        let result = parse_instance(xml.as_bytes(), Limits::default());
+        assert_eq!(result.is_ok(), ok, "id {id:?}: {result:?}");
+    }
+}
+
+#[test]
+fn schema_ref_href_whitespace_is_collapsed_for_validation_only() {
+    let xml = minimal("", "").replace("xlink:href=\"t.xsd\"", "xlink:href=\" t.xsd \"");
+    let instance = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    assert_eq!(instance.schema_refs[0].href, " t.xsd ");
+}
+
+#[test]
+fn extension_nodes_keep_in_scope_namespace_declarations() {
+    let xml = r#"<xbrl xmlns="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:r="urn:root">
+<link:schemaRef xlink:type="simple" xlink:href="x.xsd"/>
+<context id="c"><entity><identifier scheme="urn:s">A</identifier><segment><ex:m xmlns:ex="urn:ex" xmlns:t="urn:types" xsi:type="t:T"><ex:n xmlns:t="urn:inner" xsi:type="t:U"/></ex:m></segment></entity><period><forever/></period></context></xbrl>"#;
+    let instance = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    let node = &instance.contexts[0].entity.segment.as_ref().unwrap()[0];
+    let lookup = |n: &xbrl_core::instance::ExtensionNode, p: &str| {
+        n.namespaces
+            .iter()
+            .rev()
+            .find(|(prefix, _)| prefix.as_deref() == Some(p))
+            .map(|(_, uri)| uri.to_string())
+    };
+    assert_eq!(lookup(node, "t").as_deref(), Some("urn:types"));
+    assert_eq!(lookup(node, "r").as_deref(), Some("urn:root"));
+    assert_eq!(lookup(&node.children[0], "t").as_deref(), Some("urn:inner"));
+}
+
+#[test]
+fn namespace_uri_is_validated_once_per_declaration_not_per_node() {
+    let uri = format!("urn:{}", "u".repeat(100_000));
+    let facts: String = (0..2_000)
+        .map(|_| "<big:f contextRef=\"c\">1</big:f>")
+        .collect();
+    let xml = minimal("", &facts).replacen("<x:xbrl ", &format!("<x:xbrl xmlns:big=\"{uri}\" "), 1);
+    xbrl_core::qname::reset_namespace_validations();
+    parse_instance(xml.as_bytes(), Limits::default()).expect("parses");
+    let count = xbrl_core::qname::namespace_validations();
+    assert!(
+        count < 20,
+        "namespace validated {count} times for 2000 nodes"
+    );
+}
+
+#[test]
+fn duplicate_attributes_with_equal_but_distinct_namespace_allocations_are_rejected() {
+    let fact = "<e:f contextRef=\"c\" xmlns:a=\"urn:same\" xmlns:b=\"urn:same\" a:x=\"1\" b:x=\"2\">1</e:f>";
+    let xml = minimal("", fact);
+    let err = parse_instance(xml.as_bytes(), Limits::default()).unwrap_err();
+    assert!(err.message().contains("same name"), "{err:?}");
+}
