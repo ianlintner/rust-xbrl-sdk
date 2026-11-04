@@ -81,11 +81,13 @@ impl ResolvedName {
     }
 }
 
-/// Equal namespaces, testing allocation identity before content.
+/// Equal namespaces by allocation identity. Every namespace URI the reader
+/// produces is interned per document (`XmlReader::interned`), so equal
+/// content implies the same `Arc` and no URI text is ever compared.
 fn same_namespace(a: Option<&Arc<str>>, b: Option<&Arc<str>>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
         _ => false,
     }
 }
@@ -206,6 +208,12 @@ pub struct XmlReader<R: Read> {
     buf: Vec<u8>,
     /// In-scope namespace bindings, innermost last. `None` key = default namespace.
     bindings: Vec<(Option<String>, Arc<str>)>,
+    /// Per-document namespace URI interner: one validated `Arc` per distinct
+    /// URI, so equality is pointer equality and validation runs once per
+    /// distinct URI.
+    interned: HashSet<Arc<str>>,
+    /// Interned `XML_NAMESPACE`, bound implicitly to the `xml` prefix.
+    xml_namespace: Arc<str>,
     /// Open elements: resolved name plus the `bindings` length to restore on close.
     open: Vec<(ResolvedName, usize)>,
     queue: VecDeque<XmlEvent>,
@@ -233,11 +241,14 @@ impl<R: Read> XmlReader<R> {
         config.expand_empty_elements = false;
         config.check_end_names = true;
         config.check_comments = true;
+        let xml_namespace: Arc<str> = Arc::from(XML_NAMESPACE);
         Self {
             inner,
             limits,
             buf: Vec::new(),
             bindings: Vec::new(),
+            interned: HashSet::from([Arc::clone(&xml_namespace)]),
+            xml_namespace,
             open: Vec::new(),
             queue: VecDeque::new(),
             text: String::new(),
@@ -529,7 +540,7 @@ impl<R: Read> XmlReader<R> {
 
     /// Validates a namespace declaration (Namespaces §3, §6.1 for 1.0).
     fn validated_binding(
-        &self,
+        &mut self,
         prefix: Option<String>,
         uri: String,
     ) -> Result<NamespaceBinding, Diagnostic> {
@@ -560,14 +571,18 @@ impl<R: Read> XmlReader<R> {
         }
         // Validate once per declaration; names resolved against it reuse the
         // Arc without rescanning (`xmlns=""` resets the default namespace).
-        if !uri.is_empty() {
-            validate_namespace(&uri)
-                .map_err(|e| invalid(format!("invalid namespace URI {uri:?}: {e}")))?;
-        }
-        Ok(NamespaceBinding {
-            prefix,
-            uri: Arc::from(uri),
-        })
+        let uri = if let Some(existing) = self.interned.get(uri.as_str()) {
+            Arc::clone(existing)
+        } else {
+            if !uri.is_empty() {
+                validate_namespace(&uri)
+                    .map_err(|e| invalid(format!("invalid namespace URI {uri:?}: {e}")))?;
+            }
+            let shared: Arc<str> = Arc::from(uri);
+            self.interned.insert(Arc::clone(&shared));
+            shared
+        };
+        Ok(NamespaceBinding { prefix, uri })
     }
 
     /// Resolves a lexical name. `is_element` selects whether the default
@@ -606,7 +621,7 @@ impl<R: Read> XmlReader<R> {
             .find(|(bound, _)| bound.as_deref() == prefix)
             .map(|(_, uri)| Arc::clone(uri));
         match (found, prefix) {
-            (None, Some("xml")) => Some(Arc::from(XML_NAMESPACE)),
+            (None, Some("xml")) => Some(Arc::clone(&self.xml_namespace)),
             (found, _) => found,
         }
     }

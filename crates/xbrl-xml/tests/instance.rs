@@ -397,11 +397,7 @@ fn extension_nodes_keep_in_scope_namespace_declarations() {
     let instance = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
     let node = &instance.contexts[0].entity.segment.as_ref().unwrap()[0];
     let lookup = |n: &xbrl_core::instance::ExtensionNode, p: &str| {
-        n.namespaces
-            .iter()
-            .rev()
-            .find(|(prefix, _)| prefix.as_deref() == Some(p))
-            .map(|(_, uri)| uri.to_string())
+        n.namespaces.resolve(Some(p)).map(|uri| uri.to_string())
     };
     assert_eq!(lookup(node, "t").as_deref(), Some("urn:types"));
     assert_eq!(lookup(node, "r").as_deref(), Some("urn:root"));
@@ -430,4 +426,47 @@ fn duplicate_attributes_with_equal_but_distinct_namespace_allocations_are_reject
     let xml = minimal("", fact);
     let err = parse_instance(xml.as_bytes(), Limits::default()).unwrap_err();
     assert!(err.message().contains("same name"), "{err:?}");
+}
+
+#[test]
+fn extension_scope_is_shared_not_cloned_per_node() {
+    // Non-timing bound: 300 root prefixes, 1000 sibling extension nodes that
+    // declare nothing. Structural sharing means every child reuses one scope
+    // allocation, so memory does not grow with nodes x prefixes.
+    let decls: String = (0..300)
+        .map(|i| format!(" xmlns:p{i}=\"urn:p{i}\""))
+        .collect();
+    let kids: String = (0..1_000).map(|_| "<e:m/>").collect();
+    let xml = format!(
+        r#"<x:xbrl xmlns:x="http://www.xbrl.org/2003/instance" xmlns:l="http://www.xbrl.org/2003/linkbase" xmlns:xl="http://www.w3.org/1999/xlink" xmlns:e="urn:e"{decls}>
+<l:schemaRef xl:type="simple" xl:href="x.xsd"/>
+<x:context id="c"><x:entity><x:identifier scheme="urn:s">A</x:identifier><x:segment>{kids}</x:segment></x:entity><x:period><x:forever/></x:period></x:context></x:xbrl>"#
+    );
+    let instance = parse_instance(xml.as_bytes(), Limits::default()).unwrap();
+    let seg = instance.contexts[0].entity.segment.as_ref().unwrap();
+    assert_eq!(seg.len(), 1_000);
+    assert!(
+        seg.iter().all(|n| n.namespaces.ptr_eq(&seg[0].namespaces)),
+        "siblings must share one scope allocation"
+    );
+    assert_eq!(
+        seg[0].namespaces.resolve(Some("p299")).map(|u| &**u),
+        Some("urn:p299")
+    );
+}
+
+#[test]
+fn redeclaring_the_same_namespace_uri_is_validated_once() {
+    let uri = format!("urn:{}", "u".repeat(100_000));
+    let facts: String = (0..500)
+        .map(|_| format!("<big:f xmlns:big=\"{uri}\" contextRef=\"c\">1</big:f>"))
+        .collect();
+    let xml = minimal("", &facts);
+    xbrl_core::qname::reset_namespace_validations();
+    parse_instance(xml.as_bytes(), Limits::default()).expect("parses");
+    let count = xbrl_core::qname::namespace_validations();
+    assert!(
+        count < 20,
+        "namespace validated {count} times for 500 redeclarations"
+    );
 }

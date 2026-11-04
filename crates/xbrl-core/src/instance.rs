@@ -57,6 +57,95 @@ pub struct Entity {
     pub segment: Option<Vec<ExtensionNode>>,
 }
 
+/// Structurally shared in-scope namespace declarations.
+///
+/// A scope is a parent-linked chain: extending it allocates only the new
+/// declarations, and an element that declares nothing reuses its parent's
+/// `Arc`. Memory is therefore proportional to declarations in the document,
+/// not to nodes × in-scope prefixes.
+#[derive(Debug, Clone, Default)]
+pub struct NamespaceScope(Option<Arc<ScopeLink>>);
+
+#[derive(Debug)]
+struct ScopeLink {
+    parent: NamespaceScope,
+    /// `(prefix, uri)`; `None` prefix is the default namespace.
+    declarations: Vec<(Option<String>, Arc<str>)>,
+}
+
+impl NamespaceScope {
+    /// An empty scope.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(None)
+    }
+
+    /// A child scope with `declarations` shadowing this one. Returns a cheap
+    /// clone of `self` when there are none.
+    #[must_use]
+    pub fn extended(&self, declarations: Vec<(Option<String>, Arc<str>)>) -> Self {
+        if declarations.is_empty() {
+            return self.clone();
+        }
+        Self(Some(Arc::new(ScopeLink {
+            parent: self.clone(),
+            declarations,
+        })))
+    }
+
+    /// Resolves `prefix` (`None` = default namespace); innermost wins. The
+    /// implicit `xml` prefix is not recorded here.
+    #[must_use]
+    pub fn resolve(&self, prefix: Option<&str>) -> Option<&Arc<str>> {
+        let mut link = self.0.as_ref();
+        while let Some(l) = link {
+            if let Some((_, uri)) = l
+                .declarations
+                .iter()
+                .rev()
+                .find(|(p, _)| p.as_deref() == prefix)
+            {
+                return Some(uri);
+            }
+            link = l.parent.0.as_ref();
+        }
+        None
+    }
+
+    /// Whether both scopes are the same shared allocation (or both empty).
+    #[must_use]
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// All declarations, outermost first (later entries shadow earlier ones).
+    #[must_use]
+    pub fn declarations(&self) -> Vec<(Option<String>, Arc<str>)> {
+        let mut chain = Vec::new();
+        let mut link = self.0.as_ref();
+        while let Some(l) = link {
+            chain.push(l);
+            link = l.parent.0.as_ref();
+        }
+        chain
+            .iter()
+            .rev()
+            .flat_map(|l| l.declarations.iter().cloned())
+            .collect()
+    }
+}
+
+impl PartialEq for NamespaceScope {
+    fn eq(&self, other: &Self) -> bool {
+        self.declarations() == other.declarations()
+    }
+}
+impl Eq for NamespaceScope {}
+
 /// Extension subtree in segment/scenario, preserved without taxonomy interpretation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionNode {
@@ -68,7 +157,7 @@ pub struct ExtensionNode {
     ///
     /// This is what makes a QName-valued attribute such as `xsi:type="t:T"`
     /// interpretable: `t` resolves to the URI recorded here.
-    pub namespaces: Vec<(Option<String>, Arc<str>)>,
+    pub namespaces: NamespaceScope,
     /// Expanded attributes where possible; no-namespace attributes retain their local names.
     pub attributes: Vec<(Option<QName>, String, String)>,
     /// Direct character data.

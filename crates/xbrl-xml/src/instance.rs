@@ -37,7 +37,8 @@ use std::io::Read;
 use std::sync::Arc;
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
 use xbrl_core::instance::{
-    Accuracy, Context, Entity, ExtensionNode, Fact, Instance, Period, SchemaRef, Unit, UnitMeasures,
+    Accuracy, Context, Entity, ExtensionNode, Fact, Instance, NamespaceScope, Period, SchemaRef,
+    Unit, UnitMeasures,
 };
 
 use xbrl_core::namespaces::{XBRL_INSTANCE, XBRL_LINKBASE, XLINK};
@@ -121,7 +122,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
     let mut root_span: Option<SourceSpan> = None;
     // Declarations made on the root element, in scope for every descendant and
     // needed to interpret QName values inside extension subtrees.
-    let mut root_namespaces: Vec<(Option<String>, Arc<str>)> = Vec::new();
+    let mut root_namespaces = NamespaceScope::new();
     let mut past_refs = false;
     let mut instance = Instance {
         schema_refs: Vec::new(),
@@ -153,7 +154,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                         }
                         root_base = attr(&start, Some(XML_NAMESPACE), "base").map(str::to_owned);
                         root_span = Some(start.span);
-                        root_namespaces = declared_scope(&start.namespaces);
+                        root_namespaces = extend_scope(&NamespaceScope::new(), &start.namespaces);
                     }
                     2 => {
                         if is(&start, XBRL_LINKBASE, "schemaRef") {
@@ -430,7 +431,7 @@ fn schema_ref(leaf: &Leaf, root_base: Option<&str>) -> Result<SchemaRef, Diagnos
     })
 }
 
-fn context(node: &Node, inherited: &[(Option<String>, Arc<str>)]) -> Result<Context, Diagnostic> {
+fn context(node: &Node, inherited: &NamespaceScope) -> Result<Context, Diagnostic> {
     only_whitespace(node)?;
     if node.children.len() < 2
         || node.children.len() > 3
@@ -511,28 +512,19 @@ fn context(node: &Node, inherited: &[(Option<String>, Arc<str>)]) -> Result<Cont
     })
 }
 
-/// Scope entries for a set of declarations, in document order.
-fn declared_scope(bindings: &[NamespaceBinding]) -> Vec<(Option<String>, Arc<str>)> {
-    extend_scope(&[], bindings)
-}
-
-/// `inherited` followed by `bindings`; later entries shadow earlier ones.
-fn extend_scope(
-    inherited: &[(Option<String>, Arc<str>)],
-    bindings: &[NamespaceBinding],
-) -> Vec<(Option<String>, Arc<str>)> {
-    let mut scope = inherited.to_vec();
-    scope.extend(
+/// `inherited` extended by `bindings`; later entries shadow earlier ones.
+fn extend_scope(inherited: &NamespaceScope, bindings: &[NamespaceBinding]) -> NamespaceScope {
+    inherited.extended(
         bindings
             .iter()
-            .map(|b| (b.prefix().map(str::to_owned), b.uri_shared())),
-    );
-    scope
+            .map(|b| (b.prefix().map(str::to_owned), b.uri_shared()))
+            .collect(),
+    )
 }
 
 fn extension_content(
     node: &Node,
-    scope: &[(Option<String>, Arc<str>)],
+    scope: &NamespaceScope,
 ) -> Result<Vec<ExtensionNode>, Diagnostic> {
     only_whitespace(node)?;
     if node.children.is_empty() {
@@ -549,10 +541,7 @@ fn extension_content(
         .collect()
 }
 
-fn extension_node(
-    node: &Node,
-    parent_scope: &[(Option<String>, Arc<str>)],
-) -> Result<ExtensionNode, Diagnostic> {
+fn extension_node(node: &Node, parent_scope: &NamespaceScope) -> Result<ExtensionNode, Diagnostic> {
     if node.start.name.namespace() == Some(XBRL_INSTANCE) {
         return Err(error(
             INVALID_STRUCTURE,
