@@ -41,10 +41,10 @@ use xbrl_core::instance::{
 };
 
 use xbrl_core::namespaces::{XBRL_INSTANCE, XBRL_LINKBASE, XLINK};
-use xbrl_core::qname::QName;
+use xbrl_core::qname::{QName, is_ncname};
 
 use crate::limits::Limits;
-use crate::reader::{StartElement, XML_NAMESPACE, XmlEvent, XmlReader};
+use crate::reader::{NamespaceBinding, StartElement, XML_NAMESPACE, XmlEvent, XmlReader};
 use crate::uri::Uri;
 use crate::xsd::{Temporal, TemporalError, collapse, duration_is_reversed, is_blank};
 
@@ -119,6 +119,9 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
     let mut ids: HashSet<String> = HashSet::new();
     let mut root_base: Option<String> = None;
     let mut root_span: Option<SourceSpan> = None;
+    // Declarations made on the root element, in scope for every descendant and
+    // needed to interpret QName values inside extension subtrees.
+    let mut root_namespaces: Vec<(Option<String>, Arc<str>)> = Vec::new();
     let mut past_refs = false;
     let mut instance = Instance {
         schema_refs: Vec::new(),
@@ -150,6 +153,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                         }
                         root_base = attr(&start, Some(XML_NAMESPACE), "base").map(str::to_owned);
                         root_span = Some(start.span);
+                        root_namespaces = declared_scope(&start.namespaces);
                     }
                     2 => {
                         if is(&start, XBRL_LINKBASE, "schemaRef") {
@@ -259,7 +263,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                         } else {
                             let done = stack.pop().expect("reader balances start and end");
                             if is(&done.start, XBRL_INSTANCE, "context") {
-                                let ctx = context(&done)?;
+                                let ctx = context(&done, &root_namespaces)?;
                                 claim(&mut ids, &ctx.id, ctx.span)?;
                                 instance.contexts.push(ctx);
                             } else {
@@ -380,10 +384,9 @@ fn expected_children(node: &Node, expected: &[(&str, &str)]) -> Result<(), Diagn
     Ok(())
 }
 
+/// XML NCName check shared with the reader (XML 1.0 5th ed. `[4a]` minus `:`).
 fn ncname(s: &str) -> bool {
-    let mut it = s.chars();
-    matches!(it.next(), Some(c) if c.is_alphabetic() || c == '_')
-        && it.all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    is_ncname(s)
 }
 
 fn id_attr(start: &StartElement) -> Result<String, Diagnostic> {
@@ -411,7 +414,10 @@ fn schema_ref(leaf: &Leaf, root_base: Option<&str>) -> Result<SchemaRef, Diagnos
         ));
     }
     let href = required(start, Some(XLINK), "href")?;
-    Uri::parse(href).map_err(|_| error(INVALID_STRUCTURE, "invalid schemaRef URI", start.span))?;
+    // `xsd:anyURI` collapses XML whitespace before the value is a URI; validate
+    // the collapsed form but keep the raw href in the model.
+    Uri::parse(&collapse(href))
+        .map_err(|_| error(INVALID_STRUCTURE, "invalid schemaRef URI", start.span))?;
     let base_chain = [root_base, attr(start, Some(XML_NAMESPACE), "base")]
         .into_iter()
         .flatten()
@@ -424,7 +430,7 @@ fn schema_ref(leaf: &Leaf, root_base: Option<&str>) -> Result<SchemaRef, Diagnos
     })
 }
 
-fn context(node: &Node) -> Result<Context, Diagnostic> {
+fn context(node: &Node, inherited: &[(Option<String>, Arc<str>)]) -> Result<Context, Diagnostic> {
     only_whitespace(node)?;
     if node.children.len() < 2
         || node.children.len() > 3
@@ -442,6 +448,12 @@ fn context(node: &Node) -> Result<Context, Diagnostic> {
         ));
     }
     let entity_node = &node.children[0];
+    // Namespace context for `entity`'s children: root and context declarations
+    // plus the entity element's own.
+    let entity_scope = extend_scope(
+        &extend_scope(inherited, &node.start.namespaces),
+        &entity_node.start.namespaces,
+    );
     only_whitespace(entity_node)?;
     if entity_node.children.is_empty()
         || entity_node.children.len() > 2
@@ -480,19 +492,48 @@ fn context(node: &Node) -> Result<Context, Diagnostic> {
         segment: entity_node
             .children
             .get(1)
-            .map(extension_content)
+            .map(|segment| extension_content(segment, &entity_scope))
             .transpose()?,
     };
     Ok(Context {
         id: id_attr(&node.start)?,
         entity,
         period: period(&node.children[1])?,
-        scenario: node.children.get(2).map(extension_content).transpose()?,
+        scenario: node
+            .children
+            .get(2)
+            .map(|scenario| {
+                let scenario_scope = extend_scope(inherited, &node.start.namespaces);
+                extension_content(scenario, &scenario_scope)
+            })
+            .transpose()?,
         span: node.start.span,
     })
 }
 
-fn extension_content(node: &Node) -> Result<Vec<ExtensionNode>, Diagnostic> {
+/// Scope entries for a set of declarations, in document order.
+fn declared_scope(bindings: &[NamespaceBinding]) -> Vec<(Option<String>, Arc<str>)> {
+    extend_scope(&[], bindings)
+}
+
+/// `inherited` followed by `bindings`; later entries shadow earlier ones.
+fn extend_scope(
+    inherited: &[(Option<String>, Arc<str>)],
+    bindings: &[NamespaceBinding],
+) -> Vec<(Option<String>, Arc<str>)> {
+    let mut scope = inherited.to_vec();
+    scope.extend(
+        bindings
+            .iter()
+            .map(|b| (b.prefix().map(str::to_owned), b.uri_shared())),
+    );
+    scope
+}
+
+fn extension_content(
+    node: &Node,
+    scope: &[(Option<String>, Arc<str>)],
+) -> Result<Vec<ExtensionNode>, Diagnostic> {
     only_whitespace(node)?;
     if node.children.is_empty() {
         return Err(error(
@@ -501,10 +542,17 @@ fn extension_content(node: &Node) -> Result<Vec<ExtensionNode>, Diagnostic> {
             node.start.span,
         ));
     }
-    node.children.iter().map(extension_node).collect()
+    let scope = extend_scope(scope, &node.start.namespaces);
+    node.children
+        .iter()
+        .map(|child| extension_node(child, &scope))
+        .collect()
 }
 
-fn extension_node(node: &Node) -> Result<ExtensionNode, Diagnostic> {
+fn extension_node(
+    node: &Node,
+    parent_scope: &[(Option<String>, Arc<str>)],
+) -> Result<ExtensionNode, Diagnostic> {
     if node.start.name.namespace() == Some(XBRL_INSTANCE) {
         return Err(error(
             INVALID_STRUCTURE,
@@ -519,6 +567,7 @@ fn extension_node(node: &Node) -> Result<ExtensionNode, Diagnostic> {
             node.start.span,
         )
     })?;
+    let namespaces = extend_scope(parent_scope, &node.start.namespaces);
     let attributes = node
         .start
         .attributes
@@ -533,12 +582,13 @@ fn extension_node(node: &Node) -> Result<ExtensionNode, Diagnostic> {
         .collect();
     Ok(ExtensionNode {
         name,
+        namespaces: namespaces.clone(),
         attributes,
         text: node.text.clone(),
         children: node
             .children
             .iter()
-            .map(extension_node)
+            .map(|child| extension_node(child, &namespaces))
             .collect::<Result<_, _>>()?,
     })
 }
@@ -698,7 +748,7 @@ fn measure_qname(node: &Node, scope: &[(Option<String>, Arc<str>)]) -> Result<QN
             node.start.span,
         ));
     };
-    QName::from_shared(prefix, namespace, local)
+    QName::from_validated_shared(prefix, namespace, local)
         .map_err(|_| error(INVALID_MEASURE, "invalid measure QName", node.start.span))
 }
 

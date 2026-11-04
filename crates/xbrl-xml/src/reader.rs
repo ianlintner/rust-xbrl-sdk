@@ -30,7 +30,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
 
-use xbrl_core::qname::QName;
+use xbrl_core::qname::{QName, validate_namespace};
 
 use crate::limits::Limits;
 use crate::rules;
@@ -71,12 +71,22 @@ impl ResolvedName {
     /// namespace (a `QName` always carries a namespace URI).
     #[must_use]
     pub fn to_qname(&self) -> Option<QName> {
-        QName::from_shared(
+        // The URI was validated when its declaration was read: no rescan.
+        QName::from_validated_shared(
             self.prefix(),
             Arc::clone(self.namespace.as_ref()?),
             &self.local_name,
         )
         .ok()
+    }
+}
+
+/// Equal namespaces, testing allocation identity before content.
+fn same_namespace(a: Option<&Arc<str>>, b: Option<&Arc<str>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+        _ => false,
     }
 }
 
@@ -468,10 +478,15 @@ impl<R: Read> XmlReader<R> {
         }
         let name = self.resolve_name(&element_name, true)?;
         let mut attributes = Vec::with_capacity(plain.len());
-        let mut expanded: HashSet<(Option<Arc<str>>, String)> = HashSet::new();
+        // Duplicate detection compares namespaces by identity first, so a long
+        // URI is never hashed per attribute. `max_attributes_per_element`
+        // bounds the quadratic scan.
         for (key, value) in plain {
             let resolved = self.resolve_name(&key, false)?;
-            if !expanded.insert((resolved.namespace.clone(), resolved.local_name.clone())) {
+            if attributes.iter().any(|seen: &Attribute| {
+                seen.name.local_name == resolved.local_name
+                    && same_namespace(seen.name.namespace.as_ref(), resolved.namespace.as_ref())
+            }) {
                 return Err(self.error(
                     rules::DUPLICATE_ATTRIBUTE,
                     format!("two attributes expand to the same name {key:?}"),
@@ -542,6 +557,12 @@ impl<R: Read> XmlReader<R> {
             return Err(invalid(format!(
                 "the namespace {XML_NAMESPACE} may only be bound to the xml prefix"
             )));
+        }
+        // Validate once per declaration; names resolved against it reuse the
+        // Arc without rescanning (`xmlns=""` resets the default namespace).
+        if !uri.is_empty() {
+            validate_namespace(&uri)
+                .map_err(|e| invalid(format!("invalid namespace URI {uri:?}: {e}")))?;
         }
         Ok(NamespaceBinding {
             prefix,

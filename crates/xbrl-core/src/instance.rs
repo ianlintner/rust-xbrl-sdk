@@ -2,6 +2,8 @@
 //!
 //! XBRL 2.1 REC 2003-12-31 with errata to 2013-02-20, §§4.1–4.8.
 
+use std::sync::Arc;
+
 use crate::diagnostic::SourceSpan;
 use crate::qname::QName;
 
@@ -60,6 +62,13 @@ pub struct Entity {
 pub struct ExtensionNode {
     /// Expanded element name.
     pub name: QName,
+    /// In-scope namespace declarations at this element, outermost first, as
+    /// `(prefix, uri)` with `None` for the default namespace. Later entries
+    /// shadow earlier ones. The implicit `xml` prefix is not listed.
+    ///
+    /// This is what makes a QName-valued attribute such as `xsi:type="t:T"`
+    /// interpretable: `t` resolves to the URI recorded here.
+    pub namespaces: Vec<(Option<String>, Arc<str>)>,
     /// Expanded attributes where possible; no-namespace attributes retain their local names.
     pub attributes: Vec<(Option<QName>, String, String)>,
     /// Direct character data.
