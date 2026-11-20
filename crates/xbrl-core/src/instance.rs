@@ -26,7 +26,9 @@ pub struct SchemaRef {
     /// Literal xlink:href; resolve with xml:base and an explicit resolver later.
     pub href: String,
     /// Optional xml:base from the root, then schemaRef, in ancestor order.
-    pub base_chain: Vec<String>,
+    /// The inherited root value is a shared allocation, so a large root
+    /// `xml:base` is stored once however many schemaRefs inherit it.
+    pub base_chain: Vec<Arc<str>>,
     /// Byte span of the start element.
     pub span: SourceSpan,
 }

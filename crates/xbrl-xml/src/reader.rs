@@ -30,7 +30,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
 
-use xbrl_core::qname::{QName, validate_namespace};
+use xbrl_core::qname::{QName, is_ncname, validate_namespace};
 
 use crate::limits::Limits;
 use crate::rules;
@@ -81,15 +81,12 @@ impl ResolvedName {
     }
 }
 
-/// Equal namespaces by allocation identity. Every namespace URI the reader
-/// produces is interned per document (`XmlReader::interned`), so equal
-/// content implies the same `Arc` and no URI text is ever compared.
-fn same_namespace(a: Option<&Arc<str>>, b: Option<&Arc<str>>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-        _ => false,
-    }
+/// Identity of a namespace for duplicate detection: the address of its interned
+/// allocation, or 0 for "no namespace". Every namespace URI the reader produces
+/// is interned per document (`XmlReader::interned`), so equal content implies
+/// the same `Arc` and no URI text is ever hashed or compared.
+fn namespace_identity(namespace: Option<&Arc<str>>) -> usize {
+    namespace.map_or(0, |uri| Arc::as_ptr(uri).cast::<u8>() as usize)
 }
 
 /// A namespace declaration (`xmlns` / `xmlns:p`) made on an element.
@@ -489,15 +486,17 @@ impl<R: Read> XmlReader<R> {
         }
         let name = self.resolve_name(&element_name, true)?;
         let mut attributes = Vec::with_capacity(plain.len());
-        // Duplicate detection compares namespaces by identity first, so a long
-        // URI is never hashed per attribute. `max_attributes_per_element`
-        // bounds the quadratic scan.
+        // Hash-based duplicate detection in O(1) per attribute: the namespace
+        // part of the key is the interned allocation's address, so a long URI is
+        // never hashed or compared per attribute.
+        let mut expanded: HashSet<(usize, String)> = HashSet::with_capacity(plain.len());
         for (key, value) in plain {
             let resolved = self.resolve_name(&key, false)?;
-            if attributes.iter().any(|seen: &Attribute| {
-                seen.name.local_name == resolved.local_name
-                    && same_namespace(seen.name.namespace.as_ref(), resolved.namespace.as_ref())
-            }) {
+            let identity = (
+                namespace_identity(resolved.namespace.as_ref()),
+                resolved.local_name.clone(),
+            );
+            if !expanded.insert(identity) {
                 return Err(self.error(
                     rules::DUPLICATE_ATTRIBUTE,
                     format!("two attributes expand to the same name {key:?}"),
@@ -626,21 +625,11 @@ impl<R: Read> XmlReader<R> {
         }
     }
 
-    /// Light NCName check: no empty parts, no extra colons, and a legal start
-    /// and body character set. Not the full XML `NameStartChar` table; every
-    /// non-ASCII character is accepted.
+    /// NCName check using the XML 1.0 `NameStartChar`/`NameChar` tables shared
+    /// with `xbrl_core::qname`, so a name the reader accepts can always be
+    /// converted to a `QName` and the two never disagree.
     fn check_ncname(&self, part: &str) -> Result<(), Diagnostic> {
-        let mut chars = part.chars();
-        let valid = match chars.next() {
-            None => false,
-            Some(first) => {
-                (first.is_alphabetic() || first == '_' || !first.is_ascii())
-                    && chars.all(|c| {
-                        c.is_alphanumeric() || matches!(c, '_' | '-' | '.') || !c.is_ascii()
-                    })
-            }
-        };
-        if valid {
+        if is_ncname(part) {
             Ok(())
         } else {
             Err(self.error(rules::INVALID_NAME, format!("{part:?} is not a valid name")))

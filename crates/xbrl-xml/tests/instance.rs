@@ -470,3 +470,73 @@ fn redeclaring_the_same_namespace_uri_is_validated_once() {
         "namespace validated {count} times for 500 redeclarations"
     );
 }
+
+#[test]
+fn measure_qnames_do_not_rescan_a_long_namespace_uri() {
+    let uri = format!("urn:{}", "m".repeat(100_000));
+    let units: String = (0..500)
+        .map(|i| format!("<x:unit id=\"u{i}\"><x:measure>big:M</x:measure></x:unit>"))
+        .collect();
+    let xml = minimal(&units, "").replacen("<x:xbrl ", &format!("<x:xbrl xmlns:big=\"{uri}\" "), 1);
+    xbrl_core::qname::reset_namespace_validations();
+    let instance = parse_instance(xml.as_bytes(), Limits::default()).expect("parses");
+    assert_eq!(instance.units.len(), 500);
+    let count = xbrl_core::qname::namespace_validations();
+    assert!(
+        count < 20,
+        "namespace validated {count} times for 500 measures"
+    );
+}
+
+#[test]
+fn root_xml_base_is_shared_across_schema_refs() {
+    let base = format!("http://example.com/{}/", "b".repeat(100_000));
+    let refs: String = (0..200)
+        .map(|_| "<link:schemaRef xlink:type=\"simple\" xlink:href=\"t.xsd\"/>")
+        .collect();
+    let xml = format!(
+        "<x:xbrl xmlns:x=\"http://www.xbrl.org/2003/instance\" \
+         xmlns:link=\"http://www.xbrl.org/2003/linkbase\" \
+         xmlns:xlink=\"http://www.w3.org/1999/xlink\" xml:base=\"{base}\">{refs}</x:xbrl>"
+    );
+    let instance = parse_instance(xml.as_bytes(), Limits::default()).expect("parses");
+    assert_eq!(instance.schema_refs.len(), 200);
+    let first = &instance.schema_refs[0].base_chain[0];
+    assert_eq!(&**first, base.as_str());
+    assert!(
+        instance
+            .schema_refs
+            .iter()
+            .all(|r| std::sync::Arc::ptr_eq(&r.base_chain[0], first)),
+        "every schemaRef must share the root xml:base allocation"
+    );
+}
+
+#[test]
+fn many_distinct_attributes_are_accepted_and_a_late_duplicate_is_rejected() {
+    let attrs: String = (0..500).map(|i| format!(" a{i}=\"v\"")).collect();
+    let ok = minimal("", &format!("<e:f contextRef=\"c\"{attrs}>1</e:f>"));
+    parse_instance(ok.as_bytes(), Limits::default()).expect("500 distinct attributes parse");
+    let dup = minimal(
+        "",
+        &format!(
+            "<e:f contextRef=\"c\"{attrs} xmlns:p=\"urn:p\" xmlns:q=\"urn:p\" p:z=\"1\" q:z=\"2\">1</e:f>"
+        ),
+    );
+    let err = parse_instance(dup.as_bytes(), Limits::default()).unwrap_err();
+    assert!(err.message().contains("same name"), "{err:?}");
+}
+
+#[test]
+fn namespaced_attribute_with_invalid_name_is_rejected_not_unnamespaced() {
+    let xml = minimal(
+        "",
+        "<e:f contextRef=\"c\" xmlns:ex=\"urn:ex\" ex:a\u{b2}=\"v\">1</e:f>",
+    );
+    assert!(parse_instance(xml.as_bytes(), Limits::default()).is_err());
+    let seg = r#"<x:xbrl xmlns:x="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:ex="urn:ex"><link:schemaRef xlink:type="simple" xlink:href="t.xsd"/><x:context id="c"><x:entity><x:identifier scheme="urn:s">A</x:identifier><x:segment><ex:m ex:a²="v"/></x:segment></x:entity><x:period><x:forever/></x:period></x:context></x:xbrl>"#;
+    assert!(
+        parse_instance(seg.as_bytes(), Limits::default()).is_err(),
+        "extension attribute ex:a² must not be extracted as unnamespaced"
+    );
+}

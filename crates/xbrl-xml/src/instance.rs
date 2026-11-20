@@ -118,7 +118,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
     let mut stack: Vec<Node> = Vec::new();
     let mut leaf: Option<Leaf> = None;
     let mut ids: HashSet<String> = HashSet::new();
-    let mut root_base: Option<String> = None;
+    let mut root_base: Option<Arc<str>> = None;
     let mut root_span: Option<SourceSpan> = None;
     // Declarations made on the root element, in scope for every descendant and
     // needed to interpret QName values inside extension subtrees.
@@ -152,7 +152,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                         if !is(&start, XBRL_INSTANCE, "xbrl") {
                             return Err(error(INVALID_ROOT, "expected xbrli:xbrl", start.span));
                         }
-                        root_base = attr(&start, Some(XML_NAMESPACE), "base").map(str::to_owned);
+                        root_base = attr(&start, Some(XML_NAMESPACE), "base").map(Arc::<str>::from);
                         root_span = Some(start.span);
                         root_namespaces = extend_scope(&NamespaceScope::new(), &start.namespaces);
                     }
@@ -251,7 +251,7 @@ pub fn parse_instance<R: Read>(source: R, limits: Limits) -> Result<Instance, Di
                                     }
                                     instance
                                         .schema_refs
-                                        .push(schema_ref(&done, root_base.as_deref())?);
+                                        .push(schema_ref(&done, root_base.as_ref())?);
                                 }
                                 LeafKind::Fact => {
                                     let fact = fact(&done)?;
@@ -398,7 +398,7 @@ fn id_attr(start: &StartElement) -> Result<String, Diagnostic> {
     Ok(id)
 }
 
-fn schema_ref(leaf: &Leaf, root_base: Option<&str>) -> Result<SchemaRef, Diagnostic> {
+fn schema_ref(leaf: &Leaf, root_base: Option<&Arc<str>>) -> Result<SchemaRef, Diagnostic> {
     let start = &leaf.start;
     if !is_blank(&leaf.text) {
         return Err(error(
@@ -419,11 +419,8 @@ fn schema_ref(leaf: &Leaf, root_base: Option<&str>) -> Result<SchemaRef, Diagnos
     // the collapsed form but keep the raw href in the model.
     Uri::parse(&collapse(href))
         .map_err(|_| error(INVALID_STRUCTURE, "invalid schemaRef URI", start.span))?;
-    let base_chain = [root_base, attr(start, Some(XML_NAMESPACE), "base")]
-        .into_iter()
-        .flatten()
-        .map(str::to_owned)
-        .collect();
+    let own_base = attr(start, Some(XML_NAMESPACE), "base").map(Arc::<str>::from);
+    let base_chain = root_base.cloned().into_iter().chain(own_base).collect();
     Ok(SchemaRef {
         href: href.to_owned(),
         base_chain,
@@ -562,13 +559,22 @@ fn extension_node(node: &Node, parent_scope: &NamespaceScope) -> Result<Extensio
         .attributes
         .iter()
         .map(|a| {
-            (
-                a.name.to_qname(),
-                a.name.local_name().to_owned(),
-                a.value.clone(),
-            )
+            let qname = a.name.to_qname();
+            // An unnamespaced attribute legitimately has no QName; a namespaced
+            // one that fails conversion must not silently become unnamespaced.
+            if qname.is_none() && a.name.namespace().is_some() {
+                return Err(error(
+                    INVALID_STRUCTURE,
+                    format!(
+                        "invalid namespaced attribute name {:?}",
+                        a.name.local_name()
+                    ),
+                    node.start.span,
+                ));
+            }
+            Ok((qname, a.name.local_name().to_owned(), a.value.clone()))
         })
-        .collect();
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
     Ok(ExtensionNode {
         name,
         namespaces: namespaces.clone(),
