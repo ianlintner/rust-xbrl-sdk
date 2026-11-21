@@ -82,6 +82,12 @@ fn rejects_reversed_datetime_duration() {
 }
 
 #[test]
+fn accepts_hour_24_as_next_day_midnight() {
+    let xml = r#"<xbrl xmlns="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink"><link:schemaRef xlink:type="simple" xlink:href="a.xsd"/><context id="c"><entity><identifier scheme="urn:entity">E</identifier></entity><period><startDate>2025-01-05T00:00:00Z</startDate><endDate>2025-01-05T24:00:00Z</endDate></period></context></xbrl>"#;
+    parse_instance(xml.as_bytes(), Limits::default()).expect("24:00:00 is valid XSD 1.0");
+}
+
+#[test]
 fn authored_negative_fixtures_report_specific_rule() {
     let rows = include_str!("../../../fixtures/instance/invalid.tsv");
     let mut count = 0;

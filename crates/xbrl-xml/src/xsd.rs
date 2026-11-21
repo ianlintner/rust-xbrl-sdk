@@ -3,11 +3,13 @@
 //! Authority: XML Schema Part 2 (Datatypes, 1.0 2nd ed.) §3.2.7 `dateTime`,
 //! §3.2.9 `date`, §3.2.19 whitespace facet `collapse`; XBRL 2.1 §4.7.2 for the
 //! `xbrli:dateUnion` interpretation (a date-only `endDate`/`instant` means the
-//! start of the following day, and `24:00:00` is not used).
+//! start of the following day). `24:00:00` is accepted as XSD 1.0 permits it
+//! (the start of the next day) and is normalized to `00:00:00` of that day.
 //!
 //! Supported lexical space: positive years of four to nine digits (no leading
 //! zeros beyond four digits, year `0000` rejected as in XSD 1.0), `T` and `Z`
-//! upper-case only, seconds `00`–`59`, optional fractional seconds, and a
+//! upper-case only, hours `00`–`23` plus the single `24:00:00` form (with an
+//! all-zero fraction), seconds `00`–`59`, optional fractional seconds, and a
 //! timezone of `Z` or `±hh:mm` with `hh:mm` at most `14:00`. Negative years and
 //! years of more than nine digits are reported as [`TemporalError::Unsupported`]
 //! rather than guessed at.
@@ -145,7 +147,13 @@ impl Temporal {
             let minute = digits(bytes, &mut pos, 2)?;
             expect(bytes, &mut pos, b':')?;
             let second = digits(bytes, &mut pos, 2)?;
-            if hour > 23 || minute > 59 || second > 59 {
+            if hour > 24 || minute > 59 || second > 59 {
+                return None;
+            }
+            // XSD 1.0 §3.2.7.1: `24:00:00` is the only hour-24 form and means
+            // the start of the following day, so it must carry a zero fraction.
+            let hour_24 = hour == 24;
+            if hour_24 && (minute != 0 || second != 0) {
                 return None;
             }
             time_seconds = hour * 3600 + minute * 60 + second;
@@ -161,6 +169,9 @@ impl Temporal {
                 fraction = String::from_utf8_lossy(&bytes[start..pos])
                     .trim_end_matches('0')
                     .to_owned();
+                if hour_24 && !fraction.is_empty() {
+                    return None;
+                }
             }
         }
         let offset = match bytes.get(pos) {
@@ -243,6 +254,12 @@ mod tests {
             "2025-01-05T00:00:00",
             "2025-01-05T23:59:59Z",
             "2025-01-05T10:00:00.123-08:00",
+            // XSD 1.0 §3.2.7.1: 24:00:00 is the start of the following day.
+            "2025-01-05T24:00:00",
+            "2025-01-05T24:00:00Z",
+            "2025-01-05T24:00:00.000",
+            "2025-01-05T24:00:00.0-05:00",
+            "2024-02-29T24:00:00",
         ] {
             assert!(Temporal::parse(s).is_ok(), "{s}");
         }
@@ -261,7 +278,10 @@ mod tests {
             "2025-01-05t10:00:00",
             "2025-01-05z",
             "2025-01-05T10:00:60",
-            "2025-01-05T24:00:00",
+            "2025-01-05T24:00:01",
+            "2025-01-05T24:01:00",
+            "2025-01-05T24:00:00.5",
+            "2025-01-05T25:00:00",
             "2025-01-05T10:00",
             "2025-01-05T10:00:00.",
             "2025-01-05+15:00",
@@ -288,6 +308,29 @@ mod tests {
         for s in ["-0001-01-01", "-12025-06-01", "1234567890-01-01"] {
             assert_eq!(Temporal::parse(s), Err(TemporalError::Unsupported), "{s}");
         }
+    }
+
+    #[test]
+    fn hour_24_is_start_of_next_day() {
+        assert_eq!(ok("2025-01-05T24:00:00"), ok("2025-01-06T00:00:00"));
+        assert_eq!(ok("2025-12-31T24:00:00Z"), ok("2026-01-01T00:00:00Z"));
+        // Ordering: start at 24:00 of the 5th equals start of the 6th.
+        assert!(duration_is_reversed(
+            &ok("2025-01-05T24:00:00"),
+            &ok("2025-01-06T00:00:00")
+        ));
+        assert!(!duration_is_reversed(
+            &ok("2025-01-05T24:00:00"),
+            &ok("2025-01-06T00:00:01")
+        ));
+        assert!(duration_is_reversed(
+            &ok("2025-01-06T00:00:00"),
+            &ok("2025-01-05T24:00:00")
+        ));
+        assert!(!duration_is_reversed(
+            &ok("2025-01-05T23:59:59"),
+            &ok("2025-01-05T24:00:00")
+        ));
     }
 
     #[test]
