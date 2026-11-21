@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!-- Authored for this repository from XBRL 2.1 §4.1-4.8 (REC 2003-12-31, errata 2013-02-20); not copied from any conformance suite. -->
+<x:xbrl xmlns:x="http://www.xbrl.org/2003/instance" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:iso="http://www.xbrl.org/2003/iso4217" xmlns:ex="http://example.com/taxonomy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <link:schemaRef xlink:type="simple" xlink:href="taxonomies/example.xsd"/>
+  <x:context id="c1"><x:entity><x:identifier scheme="http://example.com/entity">ACME</x:identifier></x:entity><x:period><x:instant>2025-12-31</x:instant></x:period></x:context>
+  <x:context id="c2"><x:entity><x:identifier scheme="http://example.com/entity">ACME</x:identifier></x:entity><x:period><x:startDate>2025-01-01</x:startDate><x:endDate>2025-12-31</x:endDate></x:period></x:context>
+  <x:unit id="usd"><x:measure>iso:USD</x:measure></x:unit>
+  <x:unit id="perShare"><x:divide><x:unitNumerator><x:measure>iso:USD</x:measure></x:unitNumerator><x:unitDenominator><x:measure>x:shares</x:measure></x:unitDenominator></x:divide></x:unit>
+  <ex:Revenue contextRef="c2" unitRef="usd" decimals="-3">123000</ex:Revenue>
+  <ex:EPS contextRef="c2" unitRef="perShare" precision="4">1.234</ex:EPS>
+  <ex:Notes contextRef="c1">Hello &amp; goodbye</ex:Notes>
+  <ex:Missing contextRef="c1" xsi:nil="true"/>
+</x:xbrl>
