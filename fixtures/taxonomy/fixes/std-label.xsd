@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository from XBRL 2.1 Recommendation 2003-12-31 with
+     errata through 2013-02-20, §§3, 4.3, 5.1-5.3, 6-7; no external content.
+     Conventional loc_/lab_ label shape (distinct xlink:label values). -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:ex="http://example.com/taxonomy"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/taxonomy"
+           elementFormDefault="qualified"
+           id="example-schema">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="std-label.xml" xlink:role="http://www.xbrl.org/2003/role/labelLinkbaseRef" xlink:arcrole="http://www.w3.org/1999/xlink/properties/linkbase"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="Revenue" type="xs:decimal" id="Revenue"/>
+  <xs:element name="Assets" type="xs:decimal" id="Assets"/>
+</xs:schema>

@@ -15,12 +15,14 @@
 //!
 //! Only local files below the configured root are read; remote references are
 //! blocked by [`xbrl_xml::resolver::Resolver`] unless a catalog maps them to
-//! local files. Discovery has document/item budgets and detects reference
-//! cycles. Every failure is a typed [`Diagnostic`] with a stable rule id from
-//! [`crate::rules`]. Graphs are acyclic and traversed in a deterministic order
-//! (numeric `order`, then expanded name). Unsupported constructs are reported,
-//! not silently accepted. No validation of facts or filing profiles occurs
-//! here.
+//! local files. Discovery has document/item budgets and uses a visited set for
+//! termination (circular `xs:include`/`xs:import` is legal — XML Schema 1.0
+//! §4.2.1/4.2.3). Every failure is a typed [`Diagnostic`] with a stable rule id
+//! from [`crate::rules`]. Graphs are grouped by extended-link role (ELR), arcrole
+//! and arc element name; cycle detection and traversal never cross networks,
+//! and traversal order is deterministic (numeric `order`, then expanded name).
+//! Unsupported arc attributes are reported, not silently accepted. No
+//! validation of facts or filing profiles occurs here.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
@@ -36,7 +38,7 @@ use xbrl_xml::uri::Uri;
 
 pub use crate::model::LinkbaseKind;
 use crate::model::{
-    Concept, DiscoveredDocument, DocumentKind, GraphChild, Label, Relationship, TypeDefinition,
+    Concept, DiscoveredDocument, DocumentKind, Elr, GraphChild, Label, Relationship, TypeDefinition,
 };
 use crate::rules;
 
@@ -123,31 +125,29 @@ impl DtsBuilder {
     /// # Errors
     ///
     /// Typed diagnostics for unreadable references, remote references without a
-    /// catalog mapping, cycles, duplicate ids/concepts, unresolved linkbase
-    /// locators, cyclic linkbase graphs, unsupported constructs and exhausted
-    /// budgets.
+    /// catalog mapping, duplicate ids/concepts, unresolved linkbase locators,
+    /// cyclic linkbase graphs within one network, unsupported constructs and
+    /// exhausted budgets. Circular schema include/import terminates normally.
     pub fn discover(&self, entry: &str) -> Result<Dts, Diagnostic> {
         let mut state = Discovery {
             builder: self,
             documents: Vec::new(),
-            visiting: Vec::new(),
             visited: HashSet::new(),
-            schemas: Vec::new(),
-            linkbases: Vec::new(),
+            parsed: Vec::new(),
         };
         state.visit(entry, None)?;
         state.finish()
     }
 }
 
-/// Internal discovery state: a deterministic depth-first walk in reference order.
+/// Internal discovery state: a deterministic depth-first walk in reference
+/// order. XML Schema 1.0 §4.2.1/4.2.3 permits circular include/import, so the
+/// visited set both terminates the walk and removes duplicate documents.
 struct Discovery<'a> {
     builder: &'a DtsBuilder,
     documents: Vec<DiscoveredDocument>,
-    visiting: Vec<PathBuf>,
     visited: HashSet<PathBuf>,
-    schemas: Vec<ParsedSchema>,
-    linkbases: Vec<ParsedLinkbase>,
+    parsed: Vec<(String, ParsedDocument)>,
 }
 
 impl Discovery<'_> {
@@ -168,13 +168,6 @@ impl Discovery<'_> {
                 }
             })?;
         let path = file.path.clone();
-        if self.visiting.contains(&path) {
-            return Err(diagnostic(
-                rules::DISCOVERY_CYCLE,
-                format!("discovery cycle through {}", path.display()),
-                None,
-            ));
-        }
         if self.visited.insert(path.clone()) {
             if self.documents.len() >= self.builder.limits.max_documents {
                 return Err(diagnostic(
@@ -191,25 +184,19 @@ impl Discovery<'_> {
             self.documents.push(DiscoveredDocument {
                 path: path.clone(),
                 kind,
-                uri: document_uri,
+                uri: document_uri.clone(),
             });
-            self.visiting.push(path.clone());
-            let result = match parsed {
-                ParsedDocument::Schema(schema) => {
-                    self.schemas.push(schema.clone());
-                    let refs = schema.references.clone();
-                    refs.into_iter()
-                        .try_for_each(|r| self.visit(&r.href, Some(&r.base)))
-                }
-                ParsedDocument::Linkbase(linkbase) => {
-                    self.linkbases.push(linkbase.clone());
-                    let refs = linkbase.references.clone();
-                    refs.into_iter()
-                        .try_for_each(|r| self.visit(&r.href, Some(&r.base)))
-                }
-            };
-            self.visiting.pop();
-            result?;
+            self.parsed.push((document_uri, parsed.clone()));
+            match parsed {
+                ParsedDocument::Schema(schema) => schema
+                    .references
+                    .into_iter()
+                    .try_for_each(|r| self.visit(&r.href, Some(&r.base))),
+                ParsedDocument::Linkbase(linkbase) => linkbase
+                    .references
+                    .into_iter()
+                    .try_for_each(|r| self.visit(&r.href, Some(&r.base))),
+            }?;
         }
         Ok(())
     }
@@ -265,24 +252,31 @@ impl Discovery<'_> {
         let max = self.builder.limits.max_items;
         let mut count = 0_usize;
 
-        // XML IDs are document-wide in a DTS: a linkbase locator names one.
-        let mut ids: HashMap<String, QName> = HashMap::new();
-        for schema in &self.schemas {
+        // XML IDs are document-scoped (XML 1.0 §3.3.1), so index them by the
+        // absolute document URI actually read. Only top-level concept and type
+        // ids are valid targets for linkbase arcs; every other id is retained
+        // for duplicate detection but resolves to no concept.
+        let mut ids: HashMap<(String, String), Option<QName>> = HashMap::new();
+        let mut concepts: BTreeMap<String, Concept> = BTreeMap::new();
+        let mut types: BTreeMap<String, TypeDefinition> = BTreeMap::new();
+        for (uri, parsed) in &self.parsed {
+            let ParsedDocument::Schema(schema) = parsed else {
+                continue;
+            };
             for (id, name) in &schema.ids {
                 count += 1;
                 check_limit(count, max)?;
-                if ids.insert(id.clone(), name.clone()).is_some() {
+                if ids
+                    .insert((uri.clone(), id.clone()), name.clone())
+                    .is_some()
+                {
                     return Err(diagnostic(
                         rules::DUPLICATE_ID,
-                        format!("XML ID {id:?} is declared more than once in the DTS"),
+                        format!("XML ID {id:?} is declared more than once in {uri}"),
                         None,
                     ));
                 }
             }
-        }
-        let mut concepts: BTreeMap<String, Concept> = BTreeMap::new();
-        let mut types: BTreeMap<String, TypeDefinition> = BTreeMap::new();
-        for schema in &self.schemas {
             for concept in &schema.concepts {
                 count += 1;
                 check_limit(count, max)?;
@@ -305,63 +299,106 @@ impl Discovery<'_> {
                 check_limit(count, max)?;
                 if types.insert(ty.name.to_clark(), ty.clone()).is_some() {
                     return Err(diagnostic(
-                        rules::DUPLICATE_CONCEPT,
+                        rules::DUPLICATE_TYPE,
                         format!("type {} is declared more than once", ty.name.to_clark()),
                         ty.span,
                     ));
                 }
             }
         }
-        dts.ids = ids;
+        // Resolve a locator href against the linkbase's in-scope xml:base and
+        // look the id up in the target document only (XBRL 2.1 §3.5.3.7.2).
+        let resolve_loc = |loc: &ParsedLocator| -> Result<QName, Diagnostic> {
+            let target = Uri::parse(&loc.href)
+                .and_then(|reference| loc.base.resolve(&reference))
+                .map_err(|error| {
+                    diagnostic(
+                        rules::INVALID_STRUCTURE,
+                        error.message().to_owned(),
+                        Some(loc.span),
+                    )
+                })?;
+            let Some(id) = target.fragment() else {
+                return Err(locator_error(&loc.href, loc.span));
+            };
+            let document = target.without_fragment().to_string();
+            match ids.get(&(document, id.to_owned())) {
+                Some(Some(name)) => Ok(name.clone()),
+                Some(None) => Err(locator_error(&loc.href, loc.span)),
+                None => Err(locator_error(&loc.href, loc.span)),
+            }
+        };
 
-        // Resolve linkbase links. Locator labels map to concept QNames via the
-        // DTS-wide id table; resource labels map to label text and role.
+        // Resolve linkbase links. XLink arc endpoints may name either locators
+        // or resources (XBRL 2.1 §5.2.2.3, XLink 1.0 §5.1.3); for labels the
+        // association exists only where a concept-label arc connects them.
         let mut relationships = Vec::new();
-        for linkbase in &self.linkbases {
+        for (_uri, parsed) in &self.parsed {
+            let ParsedDocument::Linkbase(linkbase) = parsed else {
+                continue;
+            };
             for link in &linkbase.links {
                 let locs: HashMap<&str, QName> = link
                     .locs
                     .iter()
-                    .map(|loc| {
-                        let id = loc.href.rsplit_once('#').map_or("", |(_, id)| id);
-                        dts.ids
-                            .get(id)
-                            .map(|name| (loc.label.as_str(), name.clone()))
-                            .ok_or_else(|| {
-                                diagnostic(
-                                    rules::LOCATOR_UNRESOLVED,
-                                    format!(
-                                        "locator href {:?} has no matching XML ID in the DTS",
-                                        loc.href
-                                    ),
-                                    Some(loc.span),
-                                )
-                            })
-                    })
-                    .collect::<Result<_, _>>()?;
-
-                for resource in &link.resources {
-                    let Some(concept) = locs.get(resource.label.as_str()) else {
-                        return Err(arc_error(
-                            rules::ARC_UNRESOLVED,
-                            format!(
-                                "label resource {:?} has no locator with that xlink:label",
-                                resource.label
-                            ),
-                            resource.span,
-                        ));
-                    };
-                    count += 1;
-                    check_limit(count, max)?;
-                    dts.labels.push(Label {
-                        concept: concept.clone(),
-                        role: resource.role.clone(),
-                        lang: resource.lang.clone(),
-                        text: resource.text.clone(),
-                    });
-                }
-
+                    .map(|loc| Ok((loc.label.as_str(), resolve_loc(loc)?)))
+                    .collect::<Result<_, Diagnostic>>()?;
+                let resource_labels: HashSet<&str> = link
+                    .resources
+                    .iter()
+                    .map(|resource| resource.label.as_str())
+                    .collect();
+                // Label associations come only from concept-label arcs
+                // (XBRL 2.1 §5.2.2.3); an orphan resource is not a label.
                 for arc in &link.arcs {
+                    // use="prohibited" and non-default priority change the
+                    // network (XBRL 2.1 §3.5.3.9.7.4); accepting them as plain
+                    // edges would report relationships the taxonomy forbids.
+                    if arc.prohibited || arc.priority {
+                        return Err(arc_error(
+                            rules::UNSUPPORTED,
+                            format!(
+                                "arc xlink:use={:?}/priority={:?} is not supported",
+                                arc.use_value, arc.priority_value
+                            ),
+                            arc.span,
+                        ));
+                    }
+                    if arc.kind == LinkbaseKind::Label {
+                        if arc.arcrole != CONCEPT_LABEL {
+                            continue;
+                        }
+                        let is_endpoint = |label: &str| -> bool {
+                            locs.contains_key(label) || resource_labels.contains(label)
+                        };
+                        for endpoint in [&arc.from, &arc.to] {
+                            if !is_endpoint(endpoint) {
+                                return Err(arc_error(
+                                    rules::ARC_UNRESOLVED,
+                                    format!(
+                                        "arc xlink endpoint {endpoint:?} has no locator or resource"
+                                    ),
+                                    arc.span,
+                                ));
+                            }
+                        }
+                        for (label, concept) in &locs {
+                            if *label != arc.from {
+                                continue;
+                            }
+                            for resource in link.resources.iter().filter(|r| r.label == arc.to) {
+                                count += 1;
+                                check_limit(count, max)?;
+                                dts.labels.push(Label {
+                                    concept: concept.clone(),
+                                    role: resource.role.clone(),
+                                    lang: resource.lang.clone(),
+                                    text: resource.text.clone(),
+                                });
+                            }
+                        }
+                        continue;
+                    }
                     let Some(from) = locs.get(arc.from.as_str()) else {
                         return Err(arc_error(
                             rules::ARC_UNRESOLVED,
@@ -382,8 +419,9 @@ impl Discovery<'_> {
                         from: from.clone(),
                         to: to.clone(),
                         kind: arc.kind,
+                        elr: link.elr.clone(),
                         order: arc.order,
-                        weight: arc.weight,
+                        weight: arc.weight.unwrap_or(1.0),
                         preferred_label: arc.preferred_label.clone(),
                         arcrole: arc.arcrole.clone(),
                         span: Some(arc.span),
@@ -392,38 +430,45 @@ impl Discovery<'_> {
             }
         }
 
-        // Cheap and deterministic cycle detection on each graph kind: edges
-        // are sorted before traversal, so the same cycle is reported every run.
+        // A network is (kind, ELR, arcrole, arc element name). Cycle detection
+        // is per network: A→B in one ELR and B→A in another is legal (XBRL 2.1
+        // §3.5.3.9.7.3). Only parent-child presentation arcs must be acyclic;
+        // summation-item explicitly allows cycles (§5.2.5.2).
         relationships.sort_by(|a, b| {
-            let key_a = (a.kind, a.from.to_clark(), &a.arcrole);
-            let key_b = (b.kind, b.from.to_clark(), &b.arcrole);
-            key_a
-                .cmp(&key_b)
+            (&a.kind, &a.elr, &a.arcrole, &a.from.to_clark())
+                .cmp(&(&b.kind, &b.elr, &b.arcrole, &b.from.to_clark()))
                 .then_with(|| a.order.total_cmp(&b.order))
                 .then_with(|| a.to.to_clark().cmp(&b.to.to_clark()))
         });
-        for kind in [LinkbaseKind::Presentation, LinkbaseKind::Calculation] {
-            let mut adjacency: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for edge in relationships.iter().filter(|r| r.kind == kind) {
-                adjacency
-                    .entry(edge.from.to_clark())
-                    .or_default()
-                    .push(edge.to.to_clark());
-            }
+        let mut adjacency: BTreeMap<(LinkbaseKind, Elr, String), BTreeMap<String, Vec<String>>> =
+            BTreeMap::new();
+        for edge in relationships
+            .iter()
+            .filter(|r| r.kind == LinkbaseKind::Presentation && r.arcrole == PARENT_CHILD)
+        {
+            adjacency
+                .entry((edge.kind, edge.elr.clone(), edge.arcrole.clone()))
+                .or_default()
+                .entry(edge.from.to_clark())
+                .or_default()
+                .push(edge.to.to_clark());
+        }
+        for ((_, elr, _), graph) in &adjacency {
             let mut state: HashMap<String, u8> = HashMap::new();
-            for node in adjacency.keys() {
+            for node in graph.keys() {
                 if state.get(node).copied().unwrap_or(0) == 0 {
-                    detect_cycle(node, &adjacency, &mut state)?;
+                    detect_cycle(node, graph, &mut state, elr)?;
                 }
             }
         }
         dts.relationships = relationships;
-        dts.concept_index = concepts
-            .keys()
-            .enumerate()
-            .map(|(i, key)| (key.clone(), i))
-            .collect();
         dts.concepts = concepts.into_values().collect();
+        dts.concept_index = dts
+            .concepts
+            .iter()
+            .enumerate()
+            .map(|(i, concept)| (concept.name.to_clark(), i))
+            .collect();
         dts.types = types.into_values().collect();
         dts.labels.sort_by(|a, b| {
             (&a.concept.to_clark(), &a.role, &a.lang, &a.text).cmp(&(
@@ -433,6 +478,7 @@ impl Discovery<'_> {
                 &b.text,
             ))
         });
+        dts.labels.dedup();
         Ok(dts)
     }
 }
@@ -449,32 +495,59 @@ fn check_limit(count: usize, max: usize) -> Result<(), Diagnostic> {
     }
 }
 
+fn locator_error(href: &str, span: SourceSpan) -> Diagnostic {
+    arc_error(
+        rules::LOCATOR_UNRESOLVED,
+        format!("locator href {href:?} has no matching XML ID in the discovered DTS"),
+        span,
+    )
+}
+
 fn arc_error(rule: &str, message: impl Into<String>, span: SourceSpan) -> Diagnostic {
     diagnostic(rule, message, Some(span))
 }
 
+/// Iterative depth-first cycle check. A linear chain well inside `max_items`
+/// must return a typed diagnostic / success, never overflow the process stack.
+/// `state`: 0/absent = unvisited, 1 = on the current stack, 2 = done.
 fn detect_cycle(
-    node: &str,
+    root: &str,
     adjacency: &BTreeMap<String, Vec<String>>,
     state: &mut HashMap<String, u8>,
+    elr: &str,
 ) -> Result<(), Diagnostic> {
-    state.insert(node.to_owned(), 1);
-    if let Some(children) = adjacency.get(node) {
-        for child in children {
-            match state.get(child).copied() {
-                Some(1) => {
+    if state.get(root).copied().unwrap_or(0) != 0 {
+        return Ok(());
+    }
+    // Each frame is (node, index of the next child to examine). Keeping the
+    // stack on the heap makes depth bounded by the item budget, not by the
+    // native call stack.
+    let mut stack: Vec<(String, usize)> = vec![(root.to_owned(), 0)];
+    state.insert(root.to_owned(), 1);
+    while let Some((node, next)) = stack.last_mut() {
+        let children = adjacency.get(node.as_str());
+        let child = children.and_then(|children| children.get(*next));
+        if let Some(child) = child {
+            *next += 1;
+            match state.get(child.as_str()).copied().unwrap_or(0) {
+                1 => {
                     return Err(diagnostic(
                         rules::GRAPH_CYCLE,
-                        format!("linkbase graph has a cycle through {node}"),
+                        format!("presentation graph has a cycle through {node} in ELR {elr}"),
                         None,
                     ));
                 }
-                Some(2) => {}
-                _ => detect_cycle(child, adjacency, state)?,
+                2 => {}
+                _ => {
+                    state.insert(child.clone(), 1);
+                    stack.push((child.clone(), 0));
+                }
             }
+        } else {
+            state.insert(node.clone(), 2);
+            stack.pop();
         }
     }
-    state.insert(node.to_owned(), 2);
     Ok(())
 }
 
@@ -487,7 +560,6 @@ pub struct Dts {
     types: Vec<TypeDefinition>,
     labels: Vec<Label>,
     relationships: Vec<Relationship>,
-    ids: HashMap<String, QName>,
 }
 
 impl Dts {
@@ -555,24 +627,41 @@ impl Dts {
         })
     }
 
-    /// Root concepts of a presentation or calculation graph (nodes never used
-    /// as an arc target), sorted by expanded name.
+    /// Root concepts of a graph (nodes never used as an arc target), sorted by
+    /// expanded name. Collects roots across all extended-link networks; use
+    /// [`Dts::graph_roots_in_elr`] for one network.
     #[must_use]
     pub fn graph_roots(&self, kind: LinkbaseKind) -> Vec<GraphChild> {
+        self.graph_roots_filtered(kind, None)
+    }
+
+    /// Root concepts of one extended-link network.
+    #[must_use]
+    pub fn graph_roots_in_elr(&self, kind: LinkbaseKind, elr: &str) -> Vec<GraphChild> {
+        self.graph_roots_filtered(kind, Some(elr))
+    }
+
+    fn graph_roots_filtered(&self, kind: LinkbaseKind, elr: Option<&str>) -> Vec<GraphChild> {
+        let in_network = |r: &Relationship| r.kind == kind && elr.is_none_or(|e| r.elr == e);
         let targets: HashSet<String> = self
             .relationships
             .iter()
-            .filter(|r| r.kind == kind)
+            .filter(|r| in_network(r))
             .map(|r| r.to.to_clark())
             .collect();
         let mut roots: Vec<GraphChild> = self
             .relationships
             .iter()
-            .filter(|r| r.kind == kind && !targets.contains(&r.from.to_clark()))
+            .filter(|r| in_network(r) && !targets.contains(&r.from.to_clark()))
             .map(|edge| GraphChild::new(edge.from.clone(), edge.clone()))
             .collect();
-        roots.sort_by_key(|child| child.concept.to_clark());
-        roots.dedup_by(|a, b| a.concept == b.concept);
+        roots.sort_by(|a, b| {
+            a.concept
+                .to_clark()
+                .cmp(&b.concept.to_clark())
+                .then_with(|| a.edge.elr.cmp(&b.edge.elr))
+        });
+        roots.dedup_by(|a, b| a.concept == b.concept && a.edge.elr == b.edge.elr);
         roots
     }
 
@@ -582,19 +671,46 @@ impl Dts {
         self.graph_roots(kind)
     }
 
+    /// Presentation roots of one extended-link network.
+    #[must_use]
+    pub fn presentation_roots_in_elr(&self, kind: LinkbaseKind, elr: &str) -> Vec<GraphChild> {
+        self.graph_roots_in_elr(kind, elr)
+    }
+
     /// Children of `concept` in a graph, sorted by numeric `order` then name.
     #[must_use]
     pub fn graph_children(&self, kind: LinkbaseKind, concept: &QName) -> Vec<GraphChild> {
+        self.graph_children_filtered(kind, concept, None)
+    }
+
+    /// Children of `concept` in one extended-link network.
+    #[must_use]
+    pub fn graph_children_in_elr(
+        &self,
+        kind: LinkbaseKind,
+        concept: &QName,
+        elr: &str,
+    ) -> Vec<GraphChild> {
+        self.graph_children_filtered(kind, concept, Some(elr))
+    }
+
+    fn graph_children_filtered(
+        &self,
+        kind: LinkbaseKind,
+        concept: &QName,
+        elr: Option<&str>,
+    ) -> Vec<GraphChild> {
         let mut edges: Vec<&Relationship> = self
             .relationships
             .iter()
-            .filter(|r| r.kind == kind && &r.from == concept)
+            .filter(|r| r.kind == kind && &r.from == concept && elr.is_none_or(|e| r.elr == e))
             .collect();
         edges.sort_by(|a, b| {
             a.order
                 .total_cmp(&b.order)
                 .then_with(|| a.to.to_clark().cmp(&b.to.to_clark()))
                 .then_with(|| a.arcrole.cmp(&b.arcrole))
+                .then_with(|| a.elr.cmp(&b.elr))
         });
         edges
             .into_iter()
@@ -608,10 +724,27 @@ impl Dts {
         self.graph_children(kind, concept)
     }
 
+    /// Presentation children of `concept` in one extended-link network.
+    #[must_use]
+    pub fn presentation_children_in_elr(
+        &self,
+        kind: LinkbaseKind,
+        concept: &QName,
+        elr: &str,
+    ) -> Vec<GraphChild> {
+        self.graph_children_in_elr(kind, concept, elr)
+    }
+
     /// Calculation summands of `concept`, sorted by numeric `order`.
     #[must_use]
     pub fn calculation_summands(&self, concept: &QName) -> Vec<GraphChild> {
         self.graph_children(LinkbaseKind::Calculation, concept)
+    }
+
+    /// Calculation summands of `concept` in one extended-link network.
+    #[must_use]
+    pub fn calculation_summands_in_elr(&self, concept: &QName, elr: &str) -> Vec<GraphChild> {
+        self.graph_children_in_elr(LinkbaseKind::Calculation, concept, elr)
     }
 
     /// All discovered relationships in deterministic order.
@@ -649,7 +782,9 @@ struct ParsedSchema {
     references: Vec<Reference>,
     concepts: Vec<Concept>,
     types: Vec<TypeDefinition>,
-    ids: HashMap<String, QName>,
+    /// Document-scoped XML IDs. `None` means an id on a nested element that
+    /// does not name a top-level concept or type (not a valid arc target).
+    ids: HashMap<String, Option<QName>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -660,6 +795,7 @@ struct ParsedLinkbase {
 
 #[derive(Debug, Clone, Default)]
 struct ParsedExtendedLink {
+    elr: String,
     locs: Vec<ParsedLocator>,
     resources: Vec<ParsedLabelResource>,
     arcs: Vec<ParsedArc>,
@@ -669,6 +805,8 @@ struct ParsedExtendedLink {
 struct ParsedLocator {
     label: String,
     href: String,
+    /// In-scope base at the locator, used to resolve the href document.
+    base: Uri,
     span: SourceSpan,
 }
 
@@ -678,18 +816,21 @@ struct ParsedLabelResource {
     role: String,
     lang: Option<String>,
     text: String,
-    span: SourceSpan,
 }
 
 #[derive(Debug, Clone)]
 struct ParsedArc {
-    kind: LinkbaseKind,
     from: String,
     to: String,
+    kind: LinkbaseKind,
     arcrole: String,
     order: f64,
-    weight: f64,
+    weight: Option<f64>,
     preferred_label: Option<String>,
+    use_value: String,
+    priority_value: Option<String>,
+    prohibited: bool,
+    priority: bool,
     span: SourceSpan,
 }
 
@@ -783,7 +924,7 @@ fn reference(href: &str, bases: &[Uri], span: SourceSpan) -> Result<Reference, D
 fn insert_id(
     schema: &mut ParsedSchema,
     id: &str,
-    name: QName,
+    name: Option<QName>,
     span: SourceSpan,
 ) -> Result<(), Diagnostic> {
     if schema.ids.insert(id.to_owned(), name).is_some() {
@@ -805,19 +946,13 @@ fn parse_schema<R: std::io::Read>(
     let target_namespace = attr(&root, None, "targetNamespace")
         .unwrap_or("")
         .to_owned();
-    if target_namespace.is_empty() {
-        return Err(diagnostic(
-            rules::INVALID_STRUCTURE,
-            "xs:schema requires a non-empty targetNamespace",
-            Some(root.span),
-        ));
-    }
     let mut schema = ParsedSchema::default();
     push_bindings(namespaces, &root, bases)?;
+    // An id on the schema document root does not name a concept/type: arc
+    // locators targeting it must fail closed, not resolve to a fabricated
+    // {targetNamespace}schema concept.
     if let Some(id) = attr(&root, None, "id") {
-        let name = QName::new(None, &target_namespace, "schema")
-            .map_err(|e| diagnostic(rules::INVALID_QNAME, e.to_string(), Some(root.span)))?;
-        insert_id(&mut schema, id, name, root.span)?;
+        insert_id(&mut schema, id, None, root.span)?;
     }
     let mut depth = 1_usize;
     let mut in_appinfo = false;
@@ -916,9 +1051,9 @@ fn parse_schema<R: std::io::Read>(
                     ty.base = attr(&start, None, "base").map(str::to_owned);
                 }
                 if let Some(id) = id {
-                    // Every XML ID in the schema is addressable by a locator;
-                    // for a top-level element/type it names that component,
-                    // otherwise it names the schema document itself.
+                    // Only a top-level element/type id names a concept or type;
+                    // every other id is retained for uniqueness checks but is
+                    // not an arc target (XBRL 2.1 §3.2).
                     let name = schema
                         .concepts
                         .last()
@@ -930,10 +1065,6 @@ fn parse_schema<R: std::io::Read>(
                                 .last()
                                 .filter(|t| t.id.as_deref() == Some(id))
                                 .map(|t| t.name.clone())
-                        })
-                        .unwrap_or_else(|| {
-                            QName::new(None, &target_namespace, "schema")
-                                .expect("target namespace is valid")
                         });
                     insert_id(&mut schema, id, name, start.span)?;
                 }
@@ -986,7 +1117,15 @@ fn parse_linkbase<R: std::io::Read>(
                         ));
                     }
                     extended = Some(depth);
-                    linkbase.links.push(ParsedExtendedLink::default());
+                    linkbase.links.push(ParsedExtendedLink {
+                        // The extended link role identifies the network
+                        // (XBRL 2.1 §3.5.3.9.7.3); arcs in different ELRs are
+                        // never joined when building graphs.
+                        elr: attr(&start, Some(XLINK), "role")
+                            .unwrap_or("http://www.xbrl.org/2003/role/link")
+                            .to_owned(),
+                        ..ParsedExtendedLink::default()
+                    });
                 }
                 let in_extended = extended.is_some_and(|d| d < depth);
                 if in_extended {
@@ -994,9 +1133,14 @@ fn parse_linkbase<R: std::io::Read>(
                     if in_linkbase && local == "loc" {
                         let label = required_xlink(&start, "label")?.to_owned();
                         let href = required_xlink(&start, "href")?.to_owned();
+                        let base = bases
+                            .last()
+                            .expect("the entry base is always present")
+                            .clone();
                         linkbase.links[link_index].locs.push(ParsedLocator {
                             label,
                             href,
+                            base,
                             span: start.span,
                         });
                     } else if in_linkbase && local == "label" {
@@ -1013,7 +1157,6 @@ fn parse_linkbase<R: std::io::Read>(
                                 role,
                                 lang,
                                 text: String::new(),
-                                span: start.span,
                             },
                         ));
                     } else if in_linkbase
@@ -1030,12 +1173,19 @@ fn parse_linkbase<R: std::io::Read>(
                             .unwrap_or(1.0);
                         let weight = attr(&start, None, "weight")
                             .map(parse_decimal)
-                            .transpose()?
-                            .unwrap_or(1.0);
+                            .transpose()?;
+                        let use_value = attr(&start, Some(XLINK), "use")
+                            .unwrap_or("normal")
+                            .to_owned();
+                        let priority_value = attr(&start, None, "priority").map(str::to_owned);
+                        let prohibited = use_value == "prohibited";
+                        let priority = priority_value
+                            .as_deref()
+                            .is_some_and(|v| v != "0" && v != "1");
                         linkbase.links[link_index].arcs.push(ParsedArc {
-                            kind,
                             from: required_xlink(&start, "from")?.to_owned(),
                             to: required_xlink(&start, "to")?.to_owned(),
+                            kind,
                             arcrole: attr(&start, Some(XLINK), "arcrole")
                                 .unwrap_or(match kind {
                                     LinkbaseKind::Presentation => PARENT_CHILD,
@@ -1047,6 +1197,10 @@ fn parse_linkbase<R: std::io::Read>(
                             weight,
                             preferred_label: attr(&start, None, "preferredLabel")
                                 .map(str::to_owned),
+                            use_value,
+                            priority_value,
+                            prohibited,
+                            priority,
                             span: start.span,
                         });
                     }
@@ -1087,7 +1241,28 @@ fn required_xlink<'a>(element: &'a StartElement, local: &str) -> Result<&'a str,
 }
 
 fn parse_decimal(value: &str) -> Result<f64, Diagnostic> {
-    value.trim().parse::<f64>().map_err(|_| {
+    // xs:decimal (XML Schema 1.0 §3.2.3) is a finite base-10 number with no
+    // exponent and no INF/NaN lexical forms. Parse strictly, then verify the
+    // float is finite so overflow fails closed rather than becoming infinity.
+    let text = value.trim();
+    let valid = !text.is_empty()
+        && text
+            .strip_prefix(['+', '-'])
+            .unwrap_or(text)
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+        && text.chars().filter(|&c| c == '.').count() <= 1
+        && text
+            .strip_prefix(['+', '-'])
+            .unwrap_or(text)
+            .chars()
+            .any(|c| c.is_ascii_digit());
+    let parsed = if valid {
+        text.parse::<f64>().ok().filter(|v| v.is_finite())
+    } else {
+        None
+    };
+    parsed.ok_or_else(|| {
         diagnostic(
             rules::INVALID_NUMERIC,
             format!("{value:?} is not a valid xs:decimal"),

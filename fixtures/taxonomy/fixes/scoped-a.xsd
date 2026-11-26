@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored positive fixture: XML IDs are document-scoped. Concept `Item`
+     is reused with the same ID in a second schema in this directory. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/scoped-a"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="scoped-a-label.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:import namespace="http://example.com/scoped-b" schemaLocation="scoped-b.xsd"/>
+  <xs:element name="Item" id="Item" type="xs:decimal"/>
+</xs:schema>

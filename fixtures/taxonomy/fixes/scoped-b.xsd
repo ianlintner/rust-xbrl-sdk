@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored positive fixture: same XML ID `Item` as scoped-a.xsd, different
+     target namespace. A DTS-wide ID table would falsely report DUPLICATE_ID. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/scoped-b"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="scoped-b-label.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="Item" id="Item" type="xs:decimal"/>
+</xs:schema>

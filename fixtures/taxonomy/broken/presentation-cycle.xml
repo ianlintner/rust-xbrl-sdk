@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Authored negative fixture: presentation graph with a cycle. -->
+<!-- Authored negative fixture: presentation graph with a cycle within one ELR. -->
 <link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
                xmlns:xlink="http://www.w3.org/1999/xlink">
   <link:presentationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/presentationLink">
-    <link:loc xlink:type="locator" xlink:href="unresolved.xsd#Item" xlink:label="a"/>
-    <link:presentationArc xlink:type="arc" xlink:from="a" xlink:to="a"
+    <link:loc xlink:type="locator" xlink:href="presentation-cycle.xsd#Item" xlink:label="a"/>
+    <link:loc xlink:type="locator" xlink:href="presentation-cycle.xsd#Item" xlink:label="b"/>
+    <link:presentationArc xlink:type="arc" xlink:from="a" xlink:to="b"
         xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child" order="1"/>
+    <link:presentationArc xlink:type="arc" xlink:from="b" xlink:to="a"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child" order="2"/>
   </link:presentationLink>
 </link:linkbase>

@@ -91,23 +91,30 @@ pub enum LinkbaseKind {
     Label,
 }
 
-/// One directed relationship between concepts in a linkbase graph.
+/// Extended-link role (XLink `xlink:role` on the extended link, XBRL 2.1
+/// §3.5.3.9.7.3). Separate ELRs are separate networks: cycle detection and
+/// graph traversal never cross an ELR boundary.
+pub type Elr = String;
+
+/// One directed relationship between resources in a linkbase graph.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Relationship {
-    /// Parent/summation concept (`xlink:from`).
+    /// Parent/summation concept (`xlink:from` resolved through a locator).
     pub from: QName,
-    /// Child/summation-item concept (`xlink:to`).
+    /// Child/summation-item concept (`xlink:to` resolved through a locator).
     pub to: QName,
     /// Which graph this edge belongs to.
     pub kind: LinkbaseKind,
+    /// Extended-link role this arc belongs to.
+    pub elr: Elr,
+    /// Arcrole URI from the source, retained for provenance.
+    pub arcrole: String,
     /// Numeric `order` (default 1.0).
     pub order: f64,
     /// Calculation `weight` (default 1.0). Only meaningful for calculations.
     pub weight: f64,
     /// `preferredLabel` role, when present (presentation only).
     pub preferred_label: Option<String>,
-    /// Arcrole URI from the source, retained for provenance.
-    pub arcrole: String,
     /// Span of the arc in its source document.
     pub span: Option<SourceSpan>,
 }

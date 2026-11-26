@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- An id on the xs:schema root does not name a concept; a locator to it
+     must fail closed instead of resolving to a fabricated {tns}schema. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           id="schema-root"
+           targetNamespace="http://example.com/broken"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="schema-root-locator.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="Item" id="Item" type="xs:string"/>
+</xs:schema>

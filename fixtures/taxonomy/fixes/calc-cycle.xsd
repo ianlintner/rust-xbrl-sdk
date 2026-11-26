@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored positive fixture: summation-item explicitly allows cycles
+     (XBRL 2.1 §5.2.5.2), unlike presentation parent-child. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/calc-cycle"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="calc-cycle.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="A" id="A" type="xs:decimal"/>
+  <xs:element name="B" id="B" type="xs:decimal"/>
+</xs:schema>

@@ -16,11 +16,15 @@ pub const UNSUPPORTED: &str = "xbrl-taxonomy:unsupported";
 pub const INVALID_ROOT: &str = "xbrl-taxonomy:invalid-root";
 /// Required or malformed schema/linkbase syntax.
 pub const INVALID_STRUCTURE: &str = "xbrl-taxonomy:invalid-structure";
-/// More than one XML ID definition in the DTS carries the same value.
+/// More than one XML ID definition in one document carries the same value.
 pub const DUPLICATE_ID: &str = "xbrl-taxonomy:duplicate-id";
 /// Two different elements expand to the same QName in one DTS.
 pub const DUPLICATE_CONCEPT: &str = "xbrl-taxonomy:duplicate-concept";
-/// A locator's `xlink:href` names an id that no DTS document defines.
+/// Two different schema types expand to the same QName in one DTS.
+pub const DUPLICATE_TYPE: &str = "xbrl-taxonomy:duplicate-type";
+/// A locator's `xlink:href` names an id that no DTS document defines, names a
+/// document outside the DTS, or names a non-concept component where a concept
+/// is required.
 pub const LOCATOR_UNRESOLVED: &str = "xbrl-taxonomy:locator-unresolved";
 /// An arc endpoint label has no locator/resource in its extended link.
 pub const ARC_UNRESOLVED: &str = "xbrl-taxonomy:arc-unresolved";
@@ -42,6 +46,7 @@ pub const ALL: &[&str] = &[
     INVALID_STRUCTURE,
     DUPLICATE_ID,
     DUPLICATE_CONCEPT,
+    DUPLICATE_TYPE,
     LOCATOR_UNRESOLVED,
     ARC_UNRESOLVED,
     GRAPH_CYCLE,
