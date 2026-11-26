@@ -253,9 +253,10 @@ impl Discovery<'_> {
         let mut count = 0_usize;
 
         // XML IDs are document-scoped (XML 1.0 §3.3.1), so index them by the
-        // absolute document URI actually read. Only top-level concept and type
-        // ids are valid targets for linkbase arcs; every other id is retained
-        // for duplicate detection but resolves to no concept.
+        // absolute document URI actually read. Only top-level concept ids are
+        // targets for linkbase arcs; every other id (including named types)
+        // is retained for duplicate detection but resolves to no concept
+        // (XBRL 2.1 §5.2.2.3/§5.2.4.2/§5.2.5.2).
         let mut ids: HashMap<(String, String), Option<QName>> = HashMap::new();
         let mut concepts: BTreeMap<String, Concept> = BTreeMap::new();
         let mut types: BTreeMap<String, TypeDefinition> = BTreeMap::new();
@@ -338,11 +339,15 @@ impl Discovery<'_> {
                 continue;
             };
             for link in &linkbase.links {
-                let locs: HashMap<&str, QName> = link
-                    .locs
-                    .iter()
-                    .map(|loc| Ok((loc.label.as_str(), resolve_loc(loc)?)))
-                    .collect::<Result<_, Diagnostic>>()?;
+                // XLink arcs address every resource sharing an endpoint
+                // label (XLink 1.0 §5.1.3); keep all locators in document
+                // order so a shared label fans out deterministically.
+                let mut locs: BTreeMap<&str, Vec<QName>> = BTreeMap::new();
+                for loc in &link.locs {
+                    locs.entry(loc.label.as_str())
+                        .or_default()
+                        .push(resolve_loc(loc)?);
+                }
                 let resource_labels: HashSet<&str> = link
                     .resources
                     .iter()
@@ -358,7 +363,7 @@ impl Discovery<'_> {
                         return Err(arc_error(
                             rules::UNSUPPORTED,
                             format!(
-                                "arc xlink:use={:?}/priority={:?} is not supported",
+                                "arc `use`={:?}/priority={:?} is not supported",
                                 arc.use_value, arc.priority_value
                             ),
                             arc.span,
@@ -382,50 +387,57 @@ impl Discovery<'_> {
                                 ));
                             }
                         }
-                        for (label, concept) in &locs {
+                        for (label, concepts) in &locs {
                             if *label != arc.from {
                                 continue;
                             }
-                            for resource in link.resources.iter().filter(|r| r.label == arc.to) {
-                                count += 1;
-                                check_limit(count, max)?;
-                                dts.labels.push(Label {
-                                    concept: concept.clone(),
-                                    role: resource.role.clone(),
-                                    lang: resource.lang.clone(),
-                                    text: resource.text.clone(),
-                                });
+                            for concept in concepts {
+                                for resource in link.resources.iter().filter(|r| r.label == arc.to)
+                                {
+                                    count += 1;
+                                    check_limit(count, max)?;
+                                    dts.labels.push(Label {
+                                        concept: concept.clone(),
+                                        role: resource.role.clone(),
+                                        lang: resource.lang.clone(),
+                                        text: resource.text.clone(),
+                                    });
+                                }
                             }
                         }
                         continue;
                     }
-                    let Some(from) = locs.get(arc.from.as_str()) else {
+                    let Some(froms) = locs.get(arc.from.as_str()) else {
                         return Err(arc_error(
                             rules::ARC_UNRESOLVED,
                             format!("arc xlink:from {:?} has no locator", arc.from),
                             arc.span,
                         ));
                     };
-                    let Some(to) = locs.get(arc.to.as_str()) else {
+                    let Some(tos) = locs.get(arc.to.as_str()) else {
                         return Err(arc_error(
                             rules::ARC_UNRESOLVED,
                             format!("arc xlink:to {:?} has no locator", arc.to),
                             arc.span,
                         ));
                     };
-                    count += 1;
-                    check_limit(count, max)?;
-                    relationships.push(Relationship {
-                        from: from.clone(),
-                        to: to.clone(),
-                        kind: arc.kind,
-                        elr: link.elr.clone(),
-                        order: arc.order,
-                        weight: arc.weight.unwrap_or(1.0),
-                        preferred_label: arc.preferred_label.clone(),
-                        arcrole: arc.arcrole.clone(),
-                        span: Some(arc.span),
-                    });
+                    for from in froms {
+                        for to in tos {
+                            count += 1;
+                            check_limit(count, max)?;
+                            relationships.push(Relationship {
+                                from: from.clone(),
+                                to: to.clone(),
+                                kind: arc.kind,
+                                elr: link.elr.clone(),
+                                order: arc.order,
+                                weight: arc.weight.unwrap_or(1.0),
+                                preferred_label: arc.preferred_label.clone(),
+                                arcrole: arc.arcrole.clone(),
+                                span: Some(arc.span),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1051,21 +1063,16 @@ fn parse_schema<R: std::io::Read>(
                     ty.base = attr(&start, None, "base").map(str::to_owned);
                 }
                 if let Some(id) = id {
-                    // Only a top-level element/type id names a concept or type;
-                    // every other id is retained for uniqueness checks but is
-                    // not an arc target (XBRL 2.1 §3.2).
+                    // Only a top-level element id names a concept and may be
+                    // a linkbase arc target. Named types remain in the type
+                    // table but their ids are not arc targets (XBRL 2.1
+                    // §5.2.2.3/§5.2.4.2/§5.2.5.2); every other id is retained
+                    // for uniqueness checks only (XBRL 2.1 §3.2).
                     let name = schema
                         .concepts
                         .last()
                         .filter(|c| c.id.as_deref() == Some(id))
-                        .map(|c| c.name.clone())
-                        .or_else(|| {
-                            schema
-                                .types
-                                .last()
-                                .filter(|t| t.id.as_deref() == Some(id))
-                                .map(|t| t.name.clone())
-                        });
+                        .map(|c| c.name.clone());
                     insert_id(&mut schema, id, name, start.span)?;
                 }
             }
@@ -1174,9 +1181,10 @@ fn parse_linkbase<R: std::io::Read>(
                         let weight = attr(&start, None, "weight")
                             .map(parse_decimal)
                             .transpose()?;
-                        let use_value = attr(&start, Some(XLINK), "use")
-                            .unwrap_or("normal")
-                            .to_owned();
+                        // XBRL 2.1 §3.5.3.9.7.4 defines `use` and `priority`
+                        // as unprefixed attributes on xl:arcType
+                        // (xl-2003-12-31.xsd); XLink 1.0 has no `use`.
+                        let use_value = attr(&start, None, "use").unwrap_or("normal").to_owned();
                         let priority_value = attr(&start, None, "priority").map(str::to_owned);
                         let prohibited = use_value == "prohibited";
                         let priority = priority_value

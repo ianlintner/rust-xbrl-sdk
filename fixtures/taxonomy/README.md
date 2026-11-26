@@ -25,7 +25,9 @@ its own authored provenance comment.
 | `broken/presentation-cycle.xsd`, `broken/presentation-cycle.xml` | Cyclic presentation `parent-child` arcs within one ELR are detected. |
 | `broken/wrong-document-locator.*` | A locator naming an existing id in an undiscovered document fails closed. |
 | `broken/schema-root-locator.*` | An id on `xs:schema` is not a concept; locators to it fail closed. |
-| `broken/prohibited-arc.*`, `broken/priority-arc.*` | Unsupported arc `use`/`priority` are reported instead of silently becoming relationships. |
+| `broken/prohibited-arc.*`, `broken/priority-arc.*` | Unsupported arc `use`/`priority` are reported instead of silently becoming relationships. `use` uses the standard unprefixed form from XBRL 2.1 §3.5.3.9.7.4 / xl-2003-12-31.xsd. |
+| `broken/type-locator.*` | A locator to a named `xs:simpleType` id is not a concept and fails closed (XBRL 2.1 §5.2.4.2). |
+| `fixes/shared-locator.*` | An xlink label shared by two locators fans out to both relationship targets in document order (XLink 1.0 §5.1.3). |
 | `broken/bad-decimal.xml`, `broken/bad-decimal.xsd` | Non-decimal `order` (`NaN`) is rejected (XML Schema 1.0 §3.2.3). |
 
 Official conformance material (not copied; no pass/fail claim): the XBRL

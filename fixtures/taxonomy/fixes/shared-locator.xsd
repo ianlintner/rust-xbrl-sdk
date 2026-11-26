@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored positive fixture: two locators share xlink:label "kids" (XBRL
+     2.1 §5.2.4.2, XLink 1.0 §5.1.3). An arc to that label must fan out to
+     both targets in deterministic document/locator order, never silently
+     drop one. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/shared-loc"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="shared-locator.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="Root" id="Root" type="xs:decimal"/>
+  <xs:element name="B" id="B" type="xs:decimal"/>
+  <xs:element name="C" id="C" type="xs:decimal"/>
+</xs:schema>

@@ -276,8 +276,33 @@ fn elrs_are_separate_networks() {
 fn prohibited_and_priority_arcs_are_reported() {
     let error = load_subdir("broken", "prohibited-arc.xsd").expect_err("prohibited arc");
     assert_eq!(error.rule().as_str(), rules::UNSUPPORTED);
+    assert!(
+        error.message().contains("`use`"),
+        "message must name the standard unprefixed attribute: {}",
+        error.message()
+    );
     let error = load_subdir("broken", "priority-arc.xsd").expect_err("non-default priority");
     assert_eq!(error.rule().as_str(), rules::UNSUPPORTED);
+}
+
+#[test]
+fn locator_to_named_type_is_rejected() {
+    // Presentation arcs must connect concepts (XBRL 2.1 §5.2.4.2).
+    let error = load_subdir("broken", "type-locator.xsd").expect_err("type id locator");
+    assert_eq!(error.rule().as_str(), rules::LOCATOR_UNRESOLVED);
+}
+
+#[test]
+fn shared_locator_label_fans_out_to_every_target() {
+    let dts = load_subdir("fixes", "shared-locator.xsd").expect("shared locator label");
+    let root = QName::new(None, "http://example.com/shared-loc", "Root").expect("qname");
+    let mut children: Vec<_> = dts
+        .presentation_children(LinkbaseKind::Presentation, &root)
+        .iter()
+        .map(|child| child.concept.local_name().to_owned())
+        .collect();
+    children.sort();
+    assert_eq!(children, vec!["B", "C"]);
 }
 
 #[test]
