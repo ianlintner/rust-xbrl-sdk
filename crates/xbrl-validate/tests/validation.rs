@@ -13,7 +13,7 @@
 //! Official suite for future conformance runs (not vendored here):
 //! https://www.xbrl.org/2025/XBRL-CONF-2025-07-16.zip
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use xbrl_core::diagnostic::{Severity, SourceSpan};
 use xbrl_core::instance::{
@@ -21,6 +21,7 @@ use xbrl_core::instance::{
 };
 use xbrl_core::qname::QName;
 use xbrl_taxonomy::dts::{Dts, DtsBuilder};
+use xbrl_taxonomy::model::LinkbaseKind;
 use xbrl_validate::{RuleSet, ValidationReport, Validator};
 
 const NS: &str = "http://example.com/taxonomy";
@@ -328,18 +329,37 @@ fn calculation_rounds_facts_to_lowest_decimals_before_weighting() {
     );
 }
 
+/// Temp fixture directory cleaned up even when an assertion panics, so a
+/// failing weight-2 regression cannot leave debris behind.
+struct TempFixtureDir(PathBuf);
+
+impl TempFixtureDir {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("xbrl-validate-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for TempFixtureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn calculation_rounds_fact_before_applying_weight() {
-    // With weight 2 and value 1.4 at decimals 0, §5.2.5.2 rounds the fact
-    // to 1 before applying the weight: 2*1 = 2, not round(2.8) = 3.
-    // A test-local schema + calculation linkbase provides the weight-2 arc.
-    let dir = std::env::temp_dir().join(format!("xbrl-validate-weight2-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // §5.2.5.2: with weight 2 and value 1.4 at decimals 0, the fact is rounded
+    // to 1 before the weight is applied: 2*1 - 1 = 1, matching the total.
+    // The paired inconsistent total must produce a finding; if the linkbase
+    // namespaces are wrong and no arcs load, that assertion fails rather than
+    // letting a vacuously clean report pass the test.
+    let tmp = TempFixtureDir::new("weight2");
     std::fs::write(
-        dir.join("weighted.xsd"),
+        tmp.0.join("weighted.xsd"),
         r#"<?xml version="1.0"?>
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
- xmlns:ex="http://example.com/taxonomy" xmlns:link="http://www.w3.org/2003/linkbase"
+ xmlns:ex="http://example.com/taxonomy" xmlns:link="http://www.xbrl.org/2003/linkbase"
  xmlns:xlink="http://www.w3.org/1999/xlink" targetNamespace="http://example.com/taxonomy"
  elementFormDefault="qualified" id="weighted-schema">
  <xs:annotation><xs:appinfo>
@@ -354,9 +374,9 @@ fn calculation_rounds_fact_before_applying_weight() {
     )
     .unwrap();
     std::fs::write(
-        dir.join("weighted-calc.xml"),
+        tmp.0.join("weighted-calc.xml"),
         r#"<?xml version="1.0"?>
-<link:linkbase xmlns:link="http://www.w3.org/2003/linkbase"
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
  xmlns:xlink="http://www.w3.org/1999/xlink">
  <link:calculationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/calculationLink">
   <link:loc xlink:type="locator" xlink:href="weighted.xsd#Assets" xlink:label="assets"/>
@@ -372,23 +392,41 @@ fn calculation_rounds_fact_before_applying_weight() {
 </link:linkbase>"#,
     )
     .unwrap();
-    let dts = DtsBuilder::new(&dir)
+    let dts = DtsBuilder::new(&tmp.0)
         .unwrap()
         .discover("weighted.xsd")
         .unwrap();
-    let inst = instance(vec![
+    assert_eq!(
+        dts.relationships()
+            .iter()
+            .filter(|r| r.kind == LinkbaseKind::Calculation)
+            .count(),
+        2,
+        "the test linkbase must load both calculation arcs: {:?}",
+        dts.documents()
+    );
+    let consistent = instance(vec![
         fact("Assets", "c1", "u1", "1.00", Accuracy::Decimals(0)),
         fact("Revenue", "c1", "u1", "1.4", Accuracy::Decimals(0)),
         fact("Expenses", "c1", "u1", "1", Accuracy::Infinite),
     ]);
-    let report = Validator::default().validate(&inst, Some(&dts));
+    let report = Validator::default().validate(&consistent, Some(&dts));
     assert_eq!(
         count(&report, "xbrl-validate:calculation-inconsistent"),
         0,
         "2*round(1.4,0) + (-1) = 1 = total: {:?}",
         report.findings()
     );
-    std::fs::remove_dir_all(&dir).ok();
+
+    let mut inconsistent = consistent.clone();
+    inconsistent.facts[0].value = Some("2".into());
+    let report = Validator::default().validate(&inconsistent, Some(&dts));
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        1,
+        "2*1 - 1 = 1, not the reported total 2: {:?}",
+        report.findings()
+    );
 }
 
 #[test]

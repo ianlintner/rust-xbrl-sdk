@@ -21,22 +21,24 @@
 //!
 //! Supported: direct numeric and nonnumeric item facts, one `contextRef` and
 //! optional `unitRef`, exact decimal comparison, `decimals`/`precision` accuracy
-//! converted per XBRL 2.1 §4.6.6, identity-based duplicate detection over
-//! s-equal context aspects, and one-level calculation summation from the
-//! calculation linkbase.
+//! converted per XBRL 2.1 §4.6.6, normalized duplicate detection over context
+//! aspects, and one-level calculation summation from the calculation linkbase.
 //!
-//! Explicit limitations: no `xml:lang` or parent-element field exists in the
-//! parsed `Fact` model, so duplicate detection cannot compare those aspects
-//! and does not claim to. Numeric `unitRef` presence is checked as a
-//! reference, not as a taxonomy-derived concept-type requirement. Extension
-//! `segment`/`scenario` content is compared structurally for s-equality but
-//! is not interpreted as XBRL Dimensions.
+//! Explicit limitations: the parsed `Fact` model has no `xml:lang` or
+//! parent-element field, so duplicate detection cannot compare those aspects
+//! and does not claim to. Units are compared by `unitRef` ID, not u-equality;
+//! periods and extension content use normalized lexical keys rather than full
+//! s-equal semantics. Numeric `unitRef` presence is checked as a reference,
+//! not as a taxonomy-derived concept-type requirement.
 //!
-//! Unsupported: tuples, dimensions interpretation, `xsi:type` substitution,
-//! calculations 1.1, formula, filing profiles and anything requiring
-//! semantics this crate does not implement. Each produces an explicit
-//! [`rules::UNSUPPORTED`] finding — an unsupported input can never produce a
-//! finding-free report.
+//! Unsupported inputs this crate can detect — non-empty extension
+//! `segment`/`scenario` content, mixed or unrepresentable accuracy, missing
+//! DTS for calculation checks, unsupported weights and budget overruns —
+//! produce an explicit [`rules::UNSUPPORTED`] or [`rules::LIMIT_EXCEEDED`]
+//! finding; they never yield a finding-free report. Constructs absent from the
+//! extracted model, including tuples, `xsi:type` substitution, XBRL Dimensions
+//! interpretation, calculations 1.1, formula and filing profiles, are out of
+//! scope here and are not claimed to be diagnosed.
 //!
 //! Fixtures and their provenance are documented in `docs/core-validation.md`
 //! and `crates/xbrl-validate/tests/validation.rs`.
@@ -47,7 +49,7 @@ pub mod rules;
 use std::collections::{HashMap, HashSet};
 
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
-use xbrl_core::instance::{Accuracy, Context, Fact, Instance, UnitMeasures};
+use xbrl_core::instance::{Accuracy, Context, Fact, Instance};
 use xbrl_core::qname::QName;
 use xbrl_taxonomy::dts::Dts;
 use xbrl_taxonomy::model::LinkbaseKind;
@@ -559,9 +561,6 @@ impl Validator {
                     .segment
                     .as_ref()
                     .is_none_or(|nodes| nodes.is_empty())
-        }) && instance.units.iter().all(|u| match &u.measures {
-            UnitMeasures::Simple(_) => true,
-            UnitMeasures::Divide { .. } => true,
         })
     }
 
