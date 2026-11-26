@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: locator points at a missing concept id. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/link">
+    <link:loc xlink:type="locator" xlink:href="unresolved.xsd#Missing" xlink:label="missing"/>
+    <link:label xlink:type="resource" xlink:label="missing" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="en" xmlns:xml="http://www.w3.org/XML/1998/namespace">Missing</link:label>
+    <link:labelArc xlink:type="arc" xlink:from="missing" xlink:to="missing" xlink:arcrole="http://www.xbrl.org/2003/arcrole/concept-label"/>
+  </link:labelLink>
+</link:linkbase>

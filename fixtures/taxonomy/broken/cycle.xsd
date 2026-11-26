@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: self-referential xs:include cycle. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://example.com/broken" xmlns:ex="http://example.com/broken">
+  <xs:include schemaLocation="cycle.xsd"/>
+  <xs:element name="Item" type="xs:string"/>
+</xs:schema>

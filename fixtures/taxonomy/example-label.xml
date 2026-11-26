@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository from XBRL 2.1 §5.2.3, §6; XBRL International
+     standard roles http://www.xbrl.org/2003/role/label and .../totalLabel. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink"
+               xmlns:ex="http://example.com/taxonomy">
+  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/link">
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Revenue" xlink:label="rev"/>
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Assets" xlink:label="assets"/>
+    <link:label xlink:type="resource" xlink:label="rev" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="en" xmlns:xml="http://www.w3.org/XML/1998/namespace">Revenue &amp; Sales</link:label>
+    <link:label xlink:type="resource" xlink:label="rev" xlink:role="http://www.xbrl.org/2003/role/totalLabel" xml:lang="en" xmlns:xml="http://www.w3.org/XML/1998/namespace">Total revenue</link:label>
+    <link:label xlink:type="resource" xlink:label="assets" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="en" xmlns:xml="http://www.w3.org/XML/1998/namespace">Assets</link:label>
+    <link:labelArc xlink:type="arc" xlink:from="rev" xlink:to="rev" xlink:arcrole="http://www.xbrl.org/2003/arcrole/concept-label" xlink:title="label"/>
+    <link:labelArc xlink:type="arc" xlink:from="assets" xlink:to="assets" xlink:arcrole="http://www.xbrl.org/2003/arcrole/concept-label"/>
+  </link:labelLink>
+</link:linkbase>

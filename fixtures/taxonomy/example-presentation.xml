@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository from XBRL 2.1 §5.2.4 and the standard
+     presentation role http://www.xbrl.org/2003/role/presentationLink. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:presentationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/presentationLink">
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Totals" xlink:label="totals"/>
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Revenue" xlink:label="rev"/>
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Assets" xlink:label="assets"/>
+    <link:presentationArc xlink:type="arc" xlink:from="totals" xlink:to="rev"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child"
+        order="1" preferredLabel="http://www.xbrl.org/2003/role/totalLabel"/>
+    <link:presentationArc xlink:type="arc" xlink:from="totals" xlink:to="assets"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child" order="2"/>
+  </link:presentationLink>
+</link:linkbase>

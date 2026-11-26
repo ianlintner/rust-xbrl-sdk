@@ -1,6 +1,6 @@
 [package]
 name = "xbrl-taxonomy"
-description = "Taxonomy (DTS) discovery, schemas, concepts and linkbases (scaffold: no implementation yet)."
+description = "Bounded local DTS discovery, schema concepts and common XBRL linkbases."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

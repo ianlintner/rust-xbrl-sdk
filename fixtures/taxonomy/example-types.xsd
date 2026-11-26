@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository: shared simple types for the local DTS fixture.
+     XML Schema 1.0 Part 1 (2nd ed., 2004-10-28) §3.2-3.4. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:ex="http://example.com/taxonomy"
+           targetNamespace="http://example.com/taxonomy"
+           elementFormDefault="qualified">
+  <xs:complexType name="MonetaryType" id="MonetaryType">
+    <xs:simpleContent>
+      <xs:extension base="xs:decimal">
+        <xs:attribute name="unitRef" type="xs:IDREF" use="required"/>
+        <xs:attribute name="decimals" type="xs:string"/>
+      </xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+  <xs:simpleType name="ApprovalType" id="ApprovalType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="yes"/>
+      <xs:enumeration value="no"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
