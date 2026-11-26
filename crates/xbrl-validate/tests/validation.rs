@@ -309,6 +309,124 @@ fn item_limit_never_yields_a_false_green() {
     assert!(!report.is_clean());
 }
 
+#[test]
+fn calculation_rounds_facts_to_lowest_decimals_before_weighting() {
+    // §5.2.5.2: Assets=3 (decimals 0), Revenue=1.4 (decimals 1),
+    // Expenses=-1.4 (decimals 1) must round all facts to 0 decimals:
+    // 1 + 1 = 2, which disagrees with 3. Per-fact rounding leaves it clean.
+    let inst = instance(vec![
+        fact("Assets", "c1", "u1", "3", Accuracy::Decimals(0)),
+        fact("Revenue", "c1", "u1", "1.4", Accuracy::Decimals(1)),
+        fact("Expenses", "c1", "u1", "-1.4", Accuracy::Decimals(1)),
+    ]);
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        1,
+        "lowest-decimals rounding makes 1 + 1 = 2, not 3: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn calculation_rounds_fact_before_applying_weight() {
+    // With weight 2 and value 1.4 at decimals 0, §5.2.5.2 rounds the fact
+    // to 1 before applying the weight: 2*1 = 2, not round(2.8) = 3.
+    // A test-local schema + calculation linkbase provides the weight-2 arc.
+    let dir = std::env::temp_dir().join(format!("xbrl-validate-weight2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("weighted.xsd"),
+        r#"<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+ xmlns:ex="http://example.com/taxonomy" xmlns:link="http://www.w3.org/2003/linkbase"
+ xmlns:xlink="http://www.w3.org/1999/xlink" targetNamespace="http://example.com/taxonomy"
+ elementFormDefault="qualified" id="weighted-schema">
+ <xs:annotation><xs:appinfo>
+ <link:linkbaseRef xlink:type="simple" xlink:href="weighted-calc.xml"
+   xlink:role="http://www.xbrl.org/2003/role/calculationLinkbaseRef"
+   xlink:arcrole="http://www.w3.org/1999/xlink/properties/linkbase"/>
+ </xs:appinfo></xs:annotation>
+ <xs:element name="Assets" type="xs:decimal" id="Assets"/>
+ <xs:element name="Revenue" type="xs:decimal" id="Revenue"/>
+ <xs:element name="Expenses" type="xs:decimal" id="Expenses"/>
+</xs:schema>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("weighted-calc.xml"),
+        r#"<?xml version="1.0"?>
+<link:linkbase xmlns:link="http://www.w3.org/2003/linkbase"
+ xmlns:xlink="http://www.w3.org/1999/xlink">
+ <link:calculationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/calculationLink">
+  <link:loc xlink:type="locator" xlink:href="weighted.xsd#Assets" xlink:label="assets"/>
+  <link:loc xlink:type="locator" xlink:href="weighted.xsd#Revenue" xlink:label="rev"/>
+  <link:loc xlink:type="locator" xlink:href="weighted.xsd#Expenses" xlink:label="exp"/>
+  <link:calculationArc xlink:type="arc" xlink:from="assets" xlink:to="rev"
+    xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item"
+    order="1" weight="2"/>
+  <link:calculationArc xlink:type="arc" xlink:from="assets" xlink:to="exp"
+    xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item"
+    order="2" weight="-1"/>
+ </link:calculationLink>
+</link:linkbase>"#,
+    )
+    .unwrap();
+    let dts = DtsBuilder::new(&dir)
+        .unwrap()
+        .discover("weighted.xsd")
+        .unwrap();
+    let inst = instance(vec![
+        fact("Assets", "c1", "u1", "1.00", Accuracy::Decimals(0)),
+        fact("Revenue", "c1", "u1", "1.4", Accuracy::Decimals(0)),
+        fact("Expenses", "c1", "u1", "1", Accuracy::Infinite),
+    ]);
+    let report = Validator::default().validate(&inst, Some(&dts));
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        0,
+        "2*round(1.4,0) + (-1) = 1 = total: {:?}",
+        report.findings()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn calculation_reports_rounding_overflow_instead_of_falling_back_to_unrounded() {
+    let inst = calc_with_accuracy(
+        ("5", Accuracy::Decimals(18)),
+        (
+            "170141183460469231731687303715884105727",
+            Accuracy::Decimals(18),
+        ),
+        ("1", Accuracy::Infinite),
+    );
+    let report = validate(&inst, true);
+    assert!(
+        report.has_rule("xbrl-validate:unsupported"),
+        "a rounding overflow must emit a finding, never reuse the unrounded value: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn precision_with_fractional_value_uses_exact_decimal_magnitude() {
+    // 12000 = 17000.4 - 5100 at precision 2: §4.6.6 rounds each to -3
+    // decimals, so the sum is 17000 - 5100 = 12000, consistent.
+    let inst = calc_with_accuracy(
+        ("12000", Accuracy::Precision(2)),
+        ("17000.4", Accuracy::Precision(2)),
+        ("5100", Accuracy::Precision(2)),
+    );
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        0,
+        "{:?}",
+        report.findings()
+    );
+}
+
 // --- Regression fixtures for independent-review findings -------------------
 
 fn calc_with_accuracy(

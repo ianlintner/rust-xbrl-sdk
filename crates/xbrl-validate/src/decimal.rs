@@ -212,15 +212,23 @@ impl Decimal {
     /// Rounds to a negative number of decimal places (tens, hundreds, ...).
     /// This is required for XBRL 2.1 §4.6.6 precision-to-decimals conversion
     /// of large values, where the resulting decimals count is negative.
+    ///
+    /// The value is `unscaled / 10^scale`; rounding to `-places` means
+    /// dividing its exact decimal magnitude by `10^places`, so the source
+    /// scale must be preserved. Returns `None` on arithmetic overflow.
     #[must_use]
     pub fn round_to_negative_decimals(self, places: u8) -> Option<Self> {
         if places > MAX_SCALE {
             return None;
         }
-        let factor = 10_i128.checked_pow(u32::from(places))?;
-        let quotient = self.unscaled / factor;
-        let remainder = (self.unscaled % factor).abs();
-        let rounded = if remainder.saturating_mul(2) >= factor {
+        let shift = u32::from(places);
+        let factor = 10_i128.checked_pow(shift)?;
+        // Re-express as an integer coefficient whose units are 10^-places:
+        // (unscaled / 10^scale) / 10^places = unscaled / 10^(scale+places).
+        let divisor = 10_i128.checked_pow(u32::from(self.scale).checked_add(shift)?)?;
+        let quotient = self.unscaled.checked_div(divisor)?;
+        let remainder = (self.unscaled.checked_rem(divisor)?).unsigned_abs();
+        let rounded = if remainder.checked_mul(2)? >= divisor.unsigned_abs() {
             if self.unscaled < 0 {
                 quotient.checked_sub(1)?
             } else {
@@ -543,6 +551,37 @@ mod tests {
         assert_eq!(d.round_to_decimals(2).unwrap().to_string(), "-1.24");
         let d = Decimal::parse("9.999").unwrap();
         assert_eq!(d.round_to_decimals(2).unwrap().to_string(), "10.00");
+    }
+
+    #[test]
+    fn rounds_negative_decimals_with_fractional_source_values() {
+        // A value with a fractional part must be rounded at its true decimal
+        // magnitude, not by dividing the raw coefficient (regression: 12345.6
+        // at decimals -3 returned 123000 instead of 12000).
+        assert_eq!(
+            Decimal::parse("12345.6")
+                .unwrap()
+                .round_to_negative_decimals(3)
+                .unwrap()
+                .to_string(),
+            "12000"
+        );
+        assert_eq!(
+            Decimal::parse("-12345.6")
+                .unwrap()
+                .round_to_negative_decimals(3)
+                .unwrap()
+                .to_string(),
+            "-12000"
+        );
+        assert_eq!(
+            Decimal::parse("17000.4")
+                .unwrap()
+                .round_to_negative_decimals(3)
+                .unwrap()
+                .to_string(),
+            "17000"
+        );
     }
 
     #[test]

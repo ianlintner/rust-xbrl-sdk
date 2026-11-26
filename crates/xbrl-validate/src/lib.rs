@@ -412,8 +412,6 @@ impl Validator {
                     )
                 };
 
-                // Resolve every operand's decimals before summing: the lowest
-                // decimals controls the rounding of all operands.
                 let Some(total_value) = total
                     .value
                     .as_deref()
@@ -422,22 +420,21 @@ impl Validator {
                     self.push(report, unsupported(format!("calculation total for {} in context {context:?} is not an exact decimal", rel.from.to_prefixed())));
                     continue;
                 };
-                let mut operands: Vec<(decimal::Decimal, Option<i64>)> = Vec::new();
-                // Mixed accuracy kinds are reported as unsupported even
-                // though precision can be converted to decimals: the model
-                // cannot prove the reported combination is comparable.
-                let total_kind = match total.accuracy.unwrap_or(Accuracy::Infinite) {
+                // Resolve every operand's decimals before summing. XBRL 2.1
+                // §5.2.5.2 rounds every contributing fact and the total to
+                // the lowest reported decimals, then compares exact sums.
+                // `None` means INF accuracy, which never forces rounding.
+                let total_accuracy = total.accuracy.unwrap_or(Accuracy::Infinite);
+                let Some(total_decimals) = effective_decimals(total_accuracy, &total_value) else {
+                    self.push(report, unsupported(format!("calculation total for {} in context {context:?} has unsupported accuracy", rel.from.to_prefixed())));
+                    continue;
+                };
+                let total_kind = match total_accuracy {
                     Accuracy::Decimals(_) => 1,
                     Accuracy::Precision(_) => 2,
                     Accuracy::Infinite => 0,
                 };
-                let mut mixed = false;
-                if effective_decimals(total.accuracy.unwrap_or(Accuracy::Infinite), &total_value)
-                    .is_none()
-                {
-                    self.push(report, unsupported(format!("calculation total for {} in context {context:?} has unsupported accuracy", rel.from.to_prefixed())));
-                    continue;
-                }
+                let mut operands: Vec<(decimal::Decimal, Option<i64>, i64)> = Vec::new();
                 let mut failed = false;
                 for child in &summands {
                     let w = child.edge.weight;
@@ -481,37 +478,55 @@ impl Validator {
                         Accuracy::Infinite => 0,
                     };
                     if kind != total_kind && kind != 0 && total_kind != 0 {
-                        mixed = true;
-                    }
-                    let weight = w as i64;
-                    let Some(product) = value.checked_mul_i64(weight) else {
-                        self.push(report, unsupported(format!("calculation operand {} in context {context:?} overflows exact arithmetic", child.concept.to_prefixed())));
+                        // Precision can be converted to decimals per §4.6.6,
+                        // but mixed accuracy kinds in one relationship are
+                        // not supported by the exact comparison model.
+                        self.push(report, unsupported(format!("calculation for {} in context {context:?} mixes decimals and precision accuracy; unsupported", rel.from.to_prefixed())));
                         failed = true;
                         break;
-                    };
-                    operands.push((product, d));
+                    }
+                    let weight = w as i64;
+                    operands.push((value, d, weight));
                 }
                 if failed {
                     continue;
                 }
-                if mixed {
-                    self.push(report, unsupported(format!("calculation for {} in context {context:?} mixes decimals and precision accuracy; unsupported", rel.from.to_prefixed())));
-                    continue;
+                // The lowest decimals among all participants controls the
+                // comparison scale; INF participants do not constrain it.
+                let mut lowest = total_decimals;
+                for (_, d, _) in &operands {
+                    if let Some(d) = d {
+                        lowest = match lowest {
+                            None => Some(*d),
+                            Some(current) => Some(current.min(*d)),
+                        };
+                    }
                 }
-                let total_decimals =
-                    effective_decimals(total.accuracy.unwrap_or(Accuracy::Infinite), &total_value)
-                        .flatten();
-                let rounded_total = round_to(total_value, total_decimals).unwrap_or(total_value);
+                let Some(rounded_total) = round_to(total_value, lowest) else {
+                    self.push(
+                        report,
+                        unsupported(format!(
+                            "calculation total for {} in context {context:?} cannot be rounded",
+                            rel.from.to_prefixed()
+                        )),
+                    );
+                    continue;
+                };
                 let mut sum = decimal::Decimal::ZERO;
-                for (value, d) in &operands {
-                    // Per XBRL 2.1 §4.6.6 each fact is rounded to its own
-                    // reported accuracy before the exact sum comparison.
-                    let Some(rounded) = round_to(*value, *d) else {
+                for (value, _, weight) in &operands {
+                    // §5.2.5.2: round the fact to the common decimals first,
+                    // then apply the arc weight, then add exactly.
+                    let Some(rounded) = round_to(*value, lowest) else {
                         self.push(report, unsupported(format!("calculation operand for {} in context {context:?} cannot be rounded", rel.from.to_prefixed())));
                         failed = true;
                         break;
                     };
-                    match sum.checked_add(rounded) {
+                    let Some(weighted) = rounded.checked_mul_i64(*weight) else {
+                        self.push(report, unsupported(format!("calculation operand for {} in context {context:?} overflows exact arithmetic", rel.from.to_prefixed())));
+                        failed = true;
+                        break;
+                    };
+                    match sum.checked_add(weighted) {
                         Some(next) => sum = next,
                         None => {
                             self.push(report, unsupported(format!("calculation sum for {} in context {context:?} overflows exact arithmetic", rel.from.to_prefixed())));
@@ -523,9 +538,7 @@ impl Validator {
                 if failed {
                     continue;
                 }
-                if rounded_total.cmp(&round_to(sum, total_decimals).unwrap_or(sum))
-                    != std::cmp::Ordering::Equal
-                {
+                if rounded_total.cmp(&sum) != std::cmp::Ordering::Equal {
                     self.push(
                         report,
                         at_fact(

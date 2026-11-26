@@ -67,8 +67,8 @@ vendored because its redistribution license has not been established.
 
 ### Counts
 
-Unit tests: 9. Integration tests: 22. Rule-id uniqueness tests are included
-in the 9 unit tests. All pass; unsupported rule families are counted as
+Unit tests: 10. Integration tests: 26. Rule-id uniqueness tests are included
+in the unit tests. All pass; unsupported rule families are counted as
 unsupported, not as pass.
 
 ## Verification commands
