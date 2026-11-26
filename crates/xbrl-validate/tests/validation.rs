@@ -308,3 +308,200 @@ fn item_limit_never_yields_a_false_green() {
     assert!(report.has_rule("xbrl-validate:limit-exceeded"));
     assert!(!report.is_clean());
 }
+
+// --- Regression fixtures for independent-review findings -------------------
+
+fn calc_with_accuracy(
+    assets: (&str, Accuracy),
+    revenue: (&str, Accuracy),
+    expenses: (&str, Accuracy),
+) -> Instance {
+    instance(vec![
+        fact("Assets", "c1", "u1", assets.0, assets.1),
+        fact("Revenue", "c1", "u1", revenue.0, revenue.1),
+        fact("Expenses", "c1", "u1", expenses.0, expenses.1),
+    ])
+}
+
+#[test]
+fn mixed_decimals_and_precision_accuracy_is_unsupported_not_tolerated() {
+    let inst = calc_with_accuracy(
+        ("1000000", Accuracy::Decimals(0)),
+        ("1", Accuracy::Precision(3)),
+        ("0", Accuracy::Precision(3)),
+    );
+    let report = validate(&inst, true);
+    assert!(
+        report.has_rule("xbrl-validate:unsupported"),
+        "mixed accuracy must never produce a tolerant calculation result: {:?}",
+        report.findings()
+    );
+    assert!(!report.is_clean());
+}
+
+#[test]
+fn precision_counts_significant_digits_not_decimal_places() {
+    // 12000 = 17000 - 5100 with precision 2 on every fact. Per XBRL 2.1
+    // §4.6.6 each value rounds to 2 significant digits: 12000, 17000, 5100.
+    let inst = calc_with_accuracy(
+        ("12000", Accuracy::Precision(2)),
+        ("17000", Accuracy::Precision(2)),
+        ("5100", Accuracy::Precision(2)),
+    );
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        0,
+        "{:?}",
+        report.findings()
+    );
+    assert!(
+        !report.has_rule("xbrl-validate:unsupported"),
+        "unexpected unsupported: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn precision_zero_is_unsupported_not_a_tolerance() {
+    let inst = calc_with_accuracy(
+        ("5", Accuracy::Precision(0)),
+        ("7", Accuracy::Infinite),
+        ("1", Accuracy::Infinite),
+    );
+    let report = validate(&inst, true);
+    assert!(
+        report.has_rule("xbrl-validate:unsupported"),
+        "precision=0 means unknown accuracy: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn rounding_model_uses_lowest_decimals_and_exact_comparison() {
+    // Lowest decimals across operands is 0: 6.0 -> 6, 7.4 -> 7, 1.4 -> 1.
+    // Rounded sum 7 - 1 = 6 equals rounded total 6; the old tolerance model
+    // would instead accept arbitrary differences up to 10^0.
+    let inst = calc_with_accuracy(
+        ("6", Accuracy::Decimals(0)),
+        ("7.4", Accuracy::Decimals(0)),
+        ("1.4", Accuracy::Decimals(0)),
+    );
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        0,
+        "rounded operands reconcile: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn rounding_model_rejects_discrepancy_inside_old_tolerance() {
+    // With decimals=0 all values round to integers: total 6, sum 7-1=6 is
+    // consistent; but 7.6 - 1.0 = 6.6 rounds to 7 - 1 = 6, total 8 rounds to
+    // 8 -> mismatch although a 1.0 tolerance would have accepted it.
+    let inst = calc_with_accuracy(
+        ("8", Accuracy::Decimals(0)),
+        ("7.6", Accuracy::Decimals(0)),
+        ("1.0", Accuracy::Decimals(0)),
+    );
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        1,
+        "{:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn missing_summand_is_omitted_without_an_error() {
+    let inst = instance(vec![
+        fact("Assets", "c1", "u1", "5", Accuracy::Infinite),
+        fact("Revenue", "c1", "u1", "5", Accuracy::Infinite),
+    ]);
+    let report = validate(&inst, true);
+    assert!(
+        !report.has_rule("xbrl-validate:unsupported"),
+        "missing contributions are omitted by XBRL 2.1 §5.2.5.2: {:?}",
+        report.findings()
+    );
+    assert_eq!(
+        count(&report, "xbrl-validate:calculation-inconsistent"),
+        0,
+        "{:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn non_decimal_or_overflowing_calculation_operand_emits_finding() {
+    let inst = calc_with_accuracy(
+        ("5", Accuracy::Infinite),
+        ("not-a-number", Accuracy::Infinite),
+        ("1", Accuracy::Infinite),
+    );
+    let report = validate(&inst, true);
+    assert!(
+        report.has_rule("xbrl-validate:non-numeric-value")
+            || report.has_rule("xbrl-validate:unsupported"),
+        "a non-decimal operand must never be silently skipped: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn duplicate_facts_with_equal_value_at_different_scales_are_consistent() {
+    let inst = instance(vec![
+        Fact {
+            accuracy: Some(Accuracy::Decimals(1)),
+            ..fact("Assets", "c1", "u1", "1.0", Accuracy::Decimals(1))
+        },
+        Fact {
+            accuracy: Some(Accuracy::Decimals(0)),
+            ..fact("Assets", "c1", "u1", "1", Accuracy::Decimals(0))
+        },
+    ]);
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:duplicate-inconsistent"),
+        0,
+        "1.0 and 1 are the same value: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn duplicate_facts_in_s_equal_contexts_are_detected() {
+    let mut inst = instance(vec![
+        fact("Assets", "c1", "u1", "100", Accuracy::Infinite),
+        fact("Assets", "c2", "u1", "101", Accuracy::Infinite),
+    ]);
+    inst.contexts.push(context("c2"));
+    let report = validate(&inst, true);
+    assert_eq!(
+        count(&report, "xbrl-validate:duplicate-inconsistent"),
+        1,
+        "context ID is not an aspect; s-equal contexts are: {:?}",
+        report.findings()
+    );
+}
+
+#[test]
+fn findings_are_deterministic_across_runs() {
+    let mut inst = instance(vec![
+        fact("Assets", "c1", "u1", "1", Accuracy::Infinite),
+        fact("Revenue", "c1", "u1", "7", Accuracy::Infinite),
+        fact("Expenses", "c1", "u1", "1", Accuracy::Infinite),
+    ]);
+    inst.contexts.push(context("c2"));
+    let dts = fixture_dts();
+    let reports: Vec<_> = (0..8)
+        .map(|_| Validator::default().validate(&inst, dts.as_ref()))
+        .collect();
+    let first = &reports[0];
+    for report in &reports[1..] {
+        assert_eq!(first.findings(), report.findings());
+    }
+}

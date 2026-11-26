@@ -20,17 +20,26 @@
 //! # Scope and fail-closed policy
 //!
 //! Supported: direct numeric and nonnumeric item facts, one `contextRef` and
-//! optional `unitRef`, exact decimal comparison, `decimals`/`precision`
-//! accuracy, identity-based duplicate detection and one-level calculation
-//! summation from the calculation linkbase.
+//! optional `unitRef`, exact decimal comparison, `decimals`/`precision` accuracy
+//! converted per XBRL 2.1 §4.6.6, identity-based duplicate detection over
+//! s-equal context aspects, and one-level calculation summation from the
+//! calculation linkbase.
 //!
-//! Unsupported: tuples, dimensions (segment/scenario interpretation),
-//! `xsi:type` substitution, calculations 1.1, formula, filing profiles and
-//! anything requiring semantics this crate does not implement. Each produces
-//! an explicit [`rules::UNSUPPORTED`] finding — an unsupported input can never
-//! produce a finding-free report.
+//! Explicit limitations: no `xml:lang` or parent-element field exists in the
+//! parsed `Fact` model, so duplicate detection cannot compare those aspects
+//! and does not claim to. Numeric `unitRef` presence is checked as a
+//! reference, not as a taxonomy-derived concept-type requirement. Extension
+//! `segment`/`scenario` content is compared structurally for s-equality but
+//! is not interpreted as XBRL Dimensions.
 //!
-//! Fixtures and their provenance are documented in `fixtures/validate/README.md`.
+//! Unsupported: tuples, dimensions interpretation, `xsi:type` substitution,
+//! calculations 1.1, formula, filing profiles and anything requiring
+//! semantics this crate does not implement. Each produces an explicit
+//! [`rules::UNSUPPORTED`] finding — an unsupported input can never produce a
+//! finding-free report.
+//!
+//! Fixtures and their provenance are documented in `docs/core-validation.md`
+//! and `crates/xbrl-validate/tests/validation.rs`.
 
 pub mod decimal;
 pub mod rules;
@@ -38,7 +47,7 @@ pub mod rules;
 use std::collections::{HashMap, HashSet};
 
 use xbrl_core::diagnostic::{Diagnostic, RuleId, Severity, SourceSpan};
-use xbrl_core::instance::{Accuracy, Fact, Instance, UnitMeasures};
+use xbrl_core::instance::{Accuracy, Context, Fact, Instance, UnitMeasures};
 use xbrl_core::qname::QName;
 use xbrl_taxonomy::dts::Dts;
 use xbrl_taxonomy::model::LinkbaseKind;
@@ -47,7 +56,8 @@ use xbrl_taxonomy::model::LinkbaseKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuleSet {
     /// Structural invariants: at least one schemaRef, required fact references,
-    /// unit requirement for numeric concepts, nil and accuracy consistency.
+    /// nil and accuracy consistency. Unit reference resolution is checked by
+    /// the reference rule; taxonomy-derived type/unit compatibility is not.
     pub structural: bool,
     /// `contextRef`/`unitRef` must resolve to an ID in the instance.
     pub references: bool,
@@ -282,15 +292,30 @@ impl Validator {
         }
 
         if self.rules.duplicate_consistency {
+            let contexts: HashMap<&str, &Context> = instance
+                .contexts
+                .iter()
+                .map(|c| (c.id.as_str(), c))
+                .collect();
             let mut seen: HashMap<DupKey, &Fact> = HashMap::new();
             for fact in &instance.facts {
+                // An unresolved contextRef is reported by the reference rule;
+                // without s-equal aspects there is nothing to compare here.
+                let Some(context) = contexts.get(fact.context_ref.as_str()) else {
+                    continue;
+                };
                 let key = DupKey {
                     concept: fact.concept.clone(),
-                    context_ref: fact.context_ref.clone(),
+                    context: context_aspect_key(context),
                     unit_ref: fact.unit_ref.clone(),
                 };
                 if let Some(first) = seen.insert(key, fact) {
-                    if first.value != fact.value || first.accuracy != fact.accuracy {
+                    let first_value = normalized_value(first);
+                    let this_value = normalized_value(fact);
+                    let equal = first_value.is_some_and(|a| {
+                        this_value.is_some_and(|b| a.cmp(&b) == std::cmp::Ordering::Equal)
+                    });
+                    if first.value != fact.value && !equal {
                         self.push(
                             &mut report,
                             at_fact(
@@ -337,6 +362,10 @@ impl Validator {
     }
 
     fn check_calculations(&self, instance: &Instance, dts: &Dts, report: &mut ValidationReport) {
+        // XBRL 2.1 §5.2.5.2: round every contributing fact and the total to
+        // the lowest reported decimals, then compare the sums exactly.
+        // Mixed/unsupported accuracy and unrepresentable arithmetic produce
+        // an explicit unsupported finding — never a green result.
         let by_context: HashMap<&str, Vec<&Fact>> = {
             let mut map: HashMap<&str, Vec<&Fact>> = HashMap::new();
             for fact in &instance.facts {
@@ -345,11 +374,18 @@ impl Validator {
             map
         };
         let mut checked: HashSet<(&QName, &str)> = HashSet::new();
-        for rel in dts
+        let mut relationships: Vec<_> = dts
             .relationships()
             .iter()
             .filter(|r| r.kind == LinkbaseKind::Calculation)
-        {
+            .collect();
+        relationships.sort_by(|a, b| {
+            a.from
+                .to_prefixed()
+                .cmp(&b.from.to_prefixed())
+                .then_with(|| a.elr.cmp(&b.elr))
+        });
+        for rel in relationships {
             if !checked.insert((&rel.from, rel.elr.as_str())) {
                 continue;
             }
@@ -357,88 +393,147 @@ impl Validator {
             if summands.is_empty() {
                 continue;
             }
-            for (context, facts) in &by_context {
-                let total = facts
+            let mut context_ids: Vec<&str> = by_context.keys().copied().collect();
+            context_ids.sort_unstable();
+            for context in context_ids {
+                let facts = &by_context[context];
+                let Some(total) = facts
                     .iter()
-                    .find(|f| f.concept == rel.from && f.context_ref == *context);
-                let Some(total) = total else { continue };
-                // Unit consistency: all summands and the total must share the
-                // same unitRef. A missing unitRef is a comparison, not a
-                // numeric value, and is reported by the structural rules.
-                let mut sum = decimal::Decimal::ZERO;
-                let mut comparable = true;
-                let mut accuracy = Accuracy::Infinite;
-                for child in &summands {
-                    if child.edge.weight.fract() != 0.0 {
-                        self.push(
-                            report,
-                            diagnostic(
-                                rules::UNSUPPORTED,
-                                Severity::Error,
-                                format!(
-                                    "fractional calculation weight {} is not supported",
-                                    child.edge.weight
-                                ),
-                                Some(total.span),
-                            ),
-                        );
-                        comparable = false;
-                        break;
-                    }
-                    let Some(fact) = facts
-                        .iter()
-                        .find(|f| f.concept == child.concept && f.unit_ref == total.unit_ref)
-                    else {
-                        comparable = false;
-                        break;
-                    };
-                    let Some(value) = &fact.value else {
-                        comparable = false;
-                        break;
-                    };
-                    let Ok(value) = decimal::Decimal::parse(value) else {
-                        comparable = false;
-                        break;
-                    };
-                    let Some(scaled) = value.checked_mul_i64(child.edge.weight.trunc() as i64)
-                    else {
-                        comparable = false;
-                        break;
-                    };
-                    sum = match sum.checked_add(scaled) {
-                        Some(v) => v,
-                        None => {
-                            comparable = false;
-                            break;
-                        }
-                    };
-                    accuracy = min_accuracy(accuracy, fact.accuracy.unwrap_or(Accuracy::Infinite));
-                }
-                if !comparable {
-                    self.push(report, diagnostic(rules::UNSUPPORTED, Severity::Error,
-                        format!("calculation for {} in context {context:?} has missing, nil or non-decimal operands",
-                            rel.from.to_prefixed()), Some(total.span)));
+                    .find(|f| f.concept == rel.from && f.context_ref == context)
+                else {
                     continue;
-                }
+                };
+                let unsupported = |message: String| {
+                    diagnostic(
+                        rules::UNSUPPORTED,
+                        Severity::Error,
+                        message,
+                        Some(total.span),
+                    )
+                };
+
+                // Resolve every operand's decimals before summing: the lowest
+                // decimals controls the rounding of all operands.
                 let Some(total_value) = total
                     .value
                     .as_deref()
                     .and_then(|v| decimal::Decimal::parse(v).ok())
                 else {
+                    self.push(report, unsupported(format!("calculation total for {} in context {context:?} is not an exact decimal", rel.from.to_prefixed())));
                     continue;
                 };
-                let tolerance = accuracy_tolerance(min_accuracy(
-                    accuracy,
-                    total.accuracy.unwrap_or(Accuracy::Infinite),
-                ));
-                let difference = total_value.checked_sub(sum);
-                let Some(difference) = difference else {
-                    continue;
+                let mut operands: Vec<(decimal::Decimal, Option<i64>)> = Vec::new();
+                // Mixed accuracy kinds are reported as unsupported even
+                // though precision can be converted to decimals: the model
+                // cannot prove the reported combination is comparable.
+                let total_kind = match total.accuracy.unwrap_or(Accuracy::Infinite) {
+                    Accuracy::Decimals(_) => 1,
+                    Accuracy::Precision(_) => 2,
+                    Accuracy::Infinite => 0,
                 };
-                if difference.abs() > tolerance {
-                    self.push(report, at_fact(rules::CALCULATION_INCONSISTENT,
-                        format!("{} does not equal the sum of its calculation summands in context {context:?}",
-                            rel.from.to_prefixed()), total));
+                let mut mixed = false;
+                if effective_decimals(total.accuracy.unwrap_or(Accuracy::Infinite), &total_value)
+                    .is_none()
+                {
+                    self.push(report, unsupported(format!("calculation total for {} in context {context:?} has unsupported accuracy", rel.from.to_prefixed())));
+                    continue;
+                }
+                let mut failed = false;
+                for child in &summands {
+                    let w = child.edge.weight;
+                    if w.fract() != 0.0 || w.abs() > i64::MAX as f64 {
+                        self.push(
+                            report,
+                            unsupported(format!(
+                                "fractional or out-of-range calculation weight {w} is not supported"
+                            )),
+                        );
+                        failed = true;
+                        break;
+                    }
+                    // XBRL 2.1 §5.2.5.2: a missing contribution is simply
+                    // omitted from the sum; it is not an error.
+                    let Some(fact) = facts
+                        .iter()
+                        .find(|f| f.concept == child.concept && f.unit_ref == total.unit_ref)
+                    else {
+                        continue;
+                    };
+                    let Some(value) = fact
+                        .value
+                        .as_deref()
+                        .and_then(|v| decimal::Decimal::parse(v).ok())
+                    else {
+                        self.push(report, unsupported(format!("calculation operand {} in context {context:?} is not an exact decimal", child.concept.to_prefixed())));
+                        failed = true;
+                        break;
+                    };
+                    let Some(d) =
+                        effective_decimals(fact.accuracy.unwrap_or(Accuracy::Infinite), &value)
+                    else {
+                        self.push(report, unsupported(format!("calculation operand {} in context {context:?} has unsupported accuracy", child.concept.to_prefixed())));
+                        failed = true;
+                        break;
+                    };
+                    let kind = match fact.accuracy.unwrap_or(Accuracy::Infinite) {
+                        Accuracy::Decimals(_) => 1,
+                        Accuracy::Precision(_) => 2,
+                        Accuracy::Infinite => 0,
+                    };
+                    if kind != total_kind && kind != 0 && total_kind != 0 {
+                        mixed = true;
+                    }
+                    let weight = w as i64;
+                    let Some(product) = value.checked_mul_i64(weight) else {
+                        self.push(report, unsupported(format!("calculation operand {} in context {context:?} overflows exact arithmetic", child.concept.to_prefixed())));
+                        failed = true;
+                        break;
+                    };
+                    operands.push((product, d));
+                }
+                if failed {
+                    continue;
+                }
+                if mixed {
+                    self.push(report, unsupported(format!("calculation for {} in context {context:?} mixes decimals and precision accuracy; unsupported", rel.from.to_prefixed())));
+                    continue;
+                }
+                let total_decimals =
+                    effective_decimals(total.accuracy.unwrap_or(Accuracy::Infinite), &total_value)
+                        .flatten();
+                let rounded_total = round_to(total_value, total_decimals).unwrap_or(total_value);
+                let mut sum = decimal::Decimal::ZERO;
+                for (value, d) in &operands {
+                    // Per XBRL 2.1 §4.6.6 each fact is rounded to its own
+                    // reported accuracy before the exact sum comparison.
+                    let Some(rounded) = round_to(*value, *d) else {
+                        self.push(report, unsupported(format!("calculation operand for {} in context {context:?} cannot be rounded", rel.from.to_prefixed())));
+                        failed = true;
+                        break;
+                    };
+                    match sum.checked_add(rounded) {
+                        Some(next) => sum = next,
+                        None => {
+                            self.push(report, unsupported(format!("calculation sum for {} in context {context:?} overflows exact arithmetic", rel.from.to_prefixed())));
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    continue;
+                }
+                if rounded_total.cmp(&round_to(sum, total_decimals).unwrap_or(sum))
+                    != std::cmp::Ordering::Equal
+                {
+                    self.push(
+                        report,
+                        at_fact(
+                            rules::CALCULATION_INCONSISTENT,
+                            format!("{} does not equal the rounded sum of its calculation summands in context {context:?}", rel.from.to_prefixed()),
+                            total,
+                        ),
+                    );
                 }
             }
         }
@@ -498,43 +593,74 @@ fn at_fact(rule: &str, message: impl Into<String>, fact: &Fact) -> Diagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct DupKey {
     concept: QName,
-    context_ref: String,
+    /// s-equal context aspects; the XML ID itself is not an aspect.
+    /// `xml:lang` is not represented in the parsed model and is therefore
+    /// outside the supported duplicate check (documented as a limitation).
+    context: ContextAspects,
     unit_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ContextAspects {
+    scheme: String,
+    identifier: String,
+    period: String,
+    scenario: Option<String>,
+    segment: Option<String>,
+}
+
+fn context_aspect_key(context: &Context) -> ContextAspects {
+    fn nodes(nodes: &Option<Vec<xbrl_core::instance::ExtensionNode>>) -> Option<String> {
+        nodes.as_ref().map(|nodes| format!("{nodes:?}"))
+    }
+    ContextAspects {
+        scheme: context.entity.scheme.clone(),
+        identifier: context.entity.identifier.clone(),
+        period: format!("{:?}", context.period),
+        scenario: nodes(&context.scenario),
+        segment: nodes(&context.entity.segment),
+    }
+}
+
+/// Normalized value of a fact at its own accuracy. Returns `None` when the
+/// lexical form is not an exact decimal within the supported `i128` domain.
+fn normalized_value(fact: &Fact) -> Option<decimal::Decimal> {
+    let value = decimal::Decimal::parse(fact.value.as_deref()?).ok()?;
+    let accuracy = effective_decimals(fact.accuracy.unwrap_or(Accuracy::Infinite), &value)?;
+    round_to(value, accuracy)
+}
+
+/// Resolves a fact's accuracy to a number of decimal places, following
+/// XBRL 2.1 §4.6.6 for `precision`. `None` means the construct is outside the
+/// supported exact-decimal domain and must be reported, never tolerated.
+fn effective_decimals(accuracy: Accuracy, value: &decimal::Decimal) -> Option<Option<i64>> {
+    match accuracy {
+        Accuracy::Infinite => Some(None),
+        Accuracy::Decimals(d) if (-18..=18).contains(&d) => Some(Some(d)),
+        Accuracy::Decimals(_) => None,
+        Accuracy::Precision(0) => None,
+        Accuracy::Precision(p) => decimal::decimals_for_precision(p, *value)
+            .filter(|d| (-18..=18).contains(d))
+            .map(Some),
+    }
+}
+
+/// Rounds `value` to `decimals` places, half away from zero. `None` means
+/// `decimals` is outside the exact fixed-point domain.
+fn round_to(value: decimal::Decimal, decimals: Option<i64>) -> Option<decimal::Decimal> {
+    match decimals {
+        None => Some(value),
+        Some(d) if d < 0 => {
+            let places = u8::try_from(-d).ok()?;
+            value.round_to_negative_decimals(places)
+        }
+        Some(d) => {
+            let scale = u8::try_from(d).ok()?;
+            value.round_to_decimals(scale)
+        }
+    }
 }
 
 fn is_numeric_lexical(s: &str) -> bool {
     decimal::Decimal::parse(s).is_ok()
-}
-
-fn min_accuracy(a: Accuracy, b: Accuracy) -> Accuracy {
-    match (a, b) {
-        (Accuracy::Infinite, x) | (x, Accuracy::Infinite) => x,
-        (Accuracy::Decimals(x), Accuracy::Decimals(y)) => Accuracy::Decimals(x.min(y)),
-        (Accuracy::Precision(x), Accuracy::Precision(y)) => Accuracy::Precision(x.min(y)),
-        // Mixed accuracy types cannot be combined safely; fail closed to zero
-        // tolerance rather than silently accepting an unknown bound.
-        (Accuracy::Decimals(_), Accuracy::Precision(_))
-        | (Accuracy::Precision(_), Accuracy::Decimals(_)) => Accuracy::Decimals(i64::MIN),
-    }
-}
-
-fn accuracy_tolerance(accuracy: Accuracy) -> decimal::Decimal {
-    match accuracy {
-        Accuracy::Infinite => decimal::Decimal::ZERO,
-        Accuracy::Decimals(d) => {
-            // Clamp to the representation's own range: magnitudes beyond 10^18
-            // are outside the supported exact-decimal domain and are reported
-            // as unsupported by the parser's own limits.
-            let d = d.clamp(-18, 18);
-            decimal::Decimal::one()
-                .scale_b10(-d)
-                .unwrap_or(decimal::Decimal::ZERO)
-        }
-        Accuracy::Precision(p) => {
-            let p = p.min(18);
-            decimal::Decimal::one()
-                .scale_b10(-(p as i64))
-                .unwrap_or(decimal::Decimal::ZERO)
-        }
-    }
 }

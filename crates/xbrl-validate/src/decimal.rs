@@ -150,23 +150,23 @@ impl Decimal {
         }
     }
 
-    /// Re-expresses the same value with `target` fractional digits.
+    /// Re-expresses the same value with `target` fractional digits. No
+    /// rounding is performed; `None` means the value cannot be represented
+    /// exactly at that scale.
     #[must_use]
     pub fn rescale(self, target: u8) -> Option<Self> {
         if target > MAX_SCALE {
             return None;
         }
         if target >= self.scale {
-            let shift = usize::from(target - self.scale);
+            let shift = u32::from(target - self.scale);
             Some(Self {
-                unscaled: self
-                    .unscaled
-                    .checked_mul(10_i128.checked_pow(shift as u32)?)?,
+                unscaled: self.unscaled.checked_mul(10_i128.checked_pow(shift)?)?,
                 scale: target,
             })
         } else {
-            let shift = usize::from(self.scale - target);
-            let factor = 10_i128.checked_pow(shift as u32)?;
+            let shift = u32::from(self.scale - target);
+            let factor = 10_i128.checked_pow(shift)?;
             if self.unscaled % factor != 0 {
                 return None;
             }
@@ -177,6 +177,174 @@ impl Decimal {
         }
     }
 
+    /// Re-expresses the same value with `target` fractional digits, rounding
+    /// half away from zero when the target scale is lower.
+    ///
+    /// Returns `None` when the rounded result is outside the `i128` range.
+    /// XBRL 2.1 §5.2.5.2 requires this rounding before comparison.
+    #[must_use]
+    pub fn round_to_decimals(self, target: u8) -> Option<Self> {
+        if target > MAX_SCALE {
+            return None;
+        }
+        if target >= self.scale {
+            return self.rescale(target);
+        }
+        let shift = u32::from(self.scale - target);
+        let factor = 10_i128.checked_pow(shift)?;
+        let quotient = self.unscaled / factor;
+        let remainder = (self.unscaled % factor).abs();
+        let rounded = if remainder * 2 >= factor {
+            if self.unscaled < 0 {
+                quotient.checked_sub(1)?
+            } else {
+                quotient.checked_add(1)?
+            }
+        } else {
+            quotient
+        };
+        Some(Self {
+            unscaled: rounded,
+            scale: target,
+        })
+    }
+
+    /// Rounds to a negative number of decimal places (tens, hundreds, ...).
+    /// This is required for XBRL 2.1 §4.6.6 precision-to-decimals conversion
+    /// of large values, where the resulting decimals count is negative.
+    #[must_use]
+    pub fn round_to_negative_decimals(self, places: u8) -> Option<Self> {
+        if places > MAX_SCALE {
+            return None;
+        }
+        let factor = 10_i128.checked_pow(u32::from(places))?;
+        let quotient = self.unscaled / factor;
+        let remainder = (self.unscaled % factor).abs();
+        let rounded = if remainder.saturating_mul(2) >= factor {
+            if self.unscaled < 0 {
+                quotient.checked_sub(1)?
+            } else {
+                quotient.checked_add(1)?
+            }
+        } else {
+            quotient
+        };
+        Some(Self {
+            unscaled: rounded.checked_mul(factor)?,
+            scale: 0,
+        })
+    }
+
+    /// Number of fractional decimal places retained.
+    #[must_use]
+    pub const fn scale(self) -> u8 {
+        self.scale
+    }
+}
+
+/// Converts an XBRL precision (significant digits) to equivalent `decimals`
+/// for the given fact value, per XBRL 2.1 §4.6.6.
+///
+/// Returns `None` for precision 0 (unknown accuracy) or a value whose
+/// magnitude is outside the exact-decimal domain.
+#[must_use]
+pub fn decimals_for_precision(precision: u64, value: Decimal) -> Option<i64> {
+    if precision == 0 {
+        return None;
+    }
+    let p = i64::try_from(precision).ok()?;
+    // Zero is exactly representable at every scale; `decimals = 0` is the
+    // most conservative bound for a non-zero precision.
+    if value.unscaled == 0 {
+        return Some(0);
+    }
+    let magnitude = value.unscaled.unsigned_abs();
+    let exponent = decimal_digit_count_u128(magnitude) as i64 - i64::from(value.scale) - 1;
+    p.checked_sub(1)?.checked_sub(exponent)
+}
+
+fn decimal_digit_count_u128(mut n: u128) -> u32 {
+    let mut digits = 0;
+    while n > 0 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+/// Exact cross-scale comparison. `Decimal` values are `unscaled / 10^scale`;
+/// comparing raw coefficients across different scales is wrong, so both sides
+/// are multiplied into a common scale. The rare `i128` overflow path uses a
+/// digit-count comparator on the absolute decimal representations.
+impl Ord for Decimal {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (self.unscaled < 0, other.unscaled < 0) {
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            _ => {}
+        }
+        let a = self.unscaled.unsigned_abs();
+        let b = other.unscaled.unsigned_abs();
+        let (a, b) = if a == 0 || b == 0 {
+            let ord = a.cmp(&b);
+            return if self.unscaled < 0 {
+                ord.reverse()
+            } else {
+                ord
+            };
+        } else {
+            (a, b)
+        };
+        // Compare a * 10^other.scale with b * 10^self.scale.
+        let factor_a = 10_u128.checked_pow(u32::from(other.scale));
+        let factor_b = 10_u128.checked_pow(u32::from(self.scale));
+        let ord = match (factor_a, factor_b) {
+            (Some(fa), Some(fb)) => match (a.checked_mul(fa), b.checked_mul(fb)) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                _ => compare_by_decimal_digits(self, other),
+            },
+            _ => compare_by_decimal_digits(self, other),
+        };
+        // Both negative reverses the magnitude ordering.
+        if self.unscaled < 0 {
+            ord.reverse()
+        } else {
+            ord
+        }
+    }
+}
+
+fn compare_by_decimal_digits(a: &Decimal, b: &Decimal) -> std::cmp::Ordering {
+    // Compare the exact decimal strings: pad both to the same scale, then
+    // compare sign, integer-digit count, and fraction digit by digit.
+    let scale = a.scale.max(b.scale);
+    let fmt = |d: &Decimal| -> (String, String) {
+        let digits = d.unscaled.abs().to_string();
+        let split = digits.len().saturating_sub(usize::from(d.scale));
+        let (int_part, frac_part) = if split == 0 {
+            ("0", digits.as_str())
+        } else {
+            (&digits[..split], &digits[split..])
+        };
+        let mut frac = frac_part.to_string();
+        while frac.len() < usize::from(scale) {
+            frac.push('0');
+        }
+        (int_part.to_string(), frac)
+    };
+    let (ai, af) = fmt(a);
+    let (bi, bf) = fmt(b);
+    let magnitude = ai
+        .len()
+        .cmp(&bi.len())
+        .then_with(|| ai.cmp(&bi))
+        .then_with(|| af.cmp(&bf));
+    // Called only for same-sign values; returns magnitude order.
+    magnitude
+}
+
+impl Decimal {
     /// Adds two values exactly when the result stays in range.
     #[must_use]
     pub fn checked_add(self, other: Self) -> Option<Self> {
@@ -215,31 +383,11 @@ impl Decimal {
             scale: self.scale,
         }
     }
-
-    /// Number of fractional decimal places retained.
-    #[must_use]
-    pub const fn scale(self) -> u8 {
-        self.scale
-    }
 }
 
 impl PartialOrd for Decimal {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-impl Ord for Decimal {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let scale = self.scale.max(other.scale);
-        let a = self.rescale(scale);
-        let b = other.rescale(scale);
-        match (a, b) {
-            (Some(a), Some(b)) => a.unscaled.cmp(&b.unscaled),
-            // Out-of-range scaling means both values share a very large
-            // exponent; compare their raw coefficients scaled by magnitude.
-            _ => self.unscaled.cmp(&other.unscaled),
-        }
     }
 }
 
@@ -368,5 +516,57 @@ mod tests {
         assert_eq!(sum.to_string(), "0.2");
         let big = Decimal::parse("1.25").unwrap().checked_mul_i64(-2).unwrap();
         assert_eq!(big.to_string(), "-2.50");
+    }
+
+    #[test]
+    fn ordering_is_exact_across_scales_including_i128_limits() {
+        let one = Decimal::parse("1").unwrap();
+        let almost_one = Decimal::parse("0.999999999999999999").unwrap();
+        assert!(one > almost_one);
+        let big = Decimal::parse("170141183460469231731687303715884105727").unwrap();
+        let small = Decimal::parse("0.000000000000000001").unwrap();
+        assert!(big > small);
+        assert!(small > Decimal::ZERO);
+        assert!(small > Decimal::parse("-1").unwrap());
+        assert_eq!(big.cmp(&big), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn rounding_to_decimals_is_exact_and_bounded() {
+        let d = Decimal::parse("17000").unwrap();
+        assert_eq!(d.round_to_decimals(0).unwrap().to_string(), "17000");
+        let d = Decimal::parse("1.2345").unwrap();
+        assert_eq!(d.round_to_decimals(2).unwrap().to_string(), "1.23");
+        let d = Decimal::parse("1.235").unwrap();
+        assert_eq!(d.round_to_decimals(2).unwrap().to_string(), "1.24");
+        let d = Decimal::parse("-1.235").unwrap();
+        assert_eq!(d.round_to_decimals(2).unwrap().to_string(), "-1.24");
+        let d = Decimal::parse("9.999").unwrap();
+        assert_eq!(d.round_to_decimals(2).unwrap().to_string(), "10.00");
+    }
+
+    #[test]
+    fn significant_digit_decimals_conversion_matches_xbrl_2_1_section_4_6_6() {
+        // 12000 with precision 2 -> decimals -3 (round to nearest thousand).
+        assert_eq!(
+            decimals_for_precision(2, Decimal::parse("12000").unwrap()),
+            Some(-3)
+        );
+        assert_eq!(
+            decimals_for_precision(2, Decimal::parse("0.00120").unwrap()),
+            Some(4)
+        );
+        assert_eq!(
+            decimals_for_precision(2, Decimal::parse("0").unwrap()),
+            Some(0)
+        );
+        assert_eq!(
+            decimals_for_precision(0, Decimal::parse("12").unwrap()),
+            None
+        );
+        assert_eq!(
+            decimals_for_precision(2, Decimal::parse("-17000").unwrap()),
+            Some(-3)
+        );
     }
 }
