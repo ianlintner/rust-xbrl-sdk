@@ -21,7 +21,9 @@
 //! from [`crate::rules`]. Graphs are grouped by extended-link role (ELR), arcrole
 //! and arc element name; cycle detection and traversal never cross networks,
 //! and traversal order is deterministic (numeric `order`, then expanded name).
-//! Unsupported arc attributes are reported, not silently accepted. No
+//! Unsupported arc attributes are reported, not silently accepted. Relationship
+//! equivalence and priority-based arc override (`priority` values other than
+//! 0/1) are not implemented; those inputs fail closed with `UNSUPPORTED`. No
 //! validation of facts or filing profiles occurs here.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -134,6 +136,7 @@ impl DtsBuilder {
             documents: Vec::new(),
             visited: HashSet::new(),
             parsed: Vec::new(),
+            aliases: HashMap::new(),
         };
         state.visit(entry, None)?;
         state.finish()
@@ -148,6 +151,12 @@ struct Discovery<'a> {
     documents: Vec<DiscoveredDocument>,
     visited: HashSet<PathBuf>,
     parsed: Vec<(String, ParsedDocument)>,
+    /// Every absolute document URI that resolved to a given local path,
+    /// including catalog-rewrite source URIs and aliases seen only in later
+    /// references. XML IDs are indexed under all of them so locator hrefs
+    /// naming the remote name resolve to the same discovered schema
+    /// (XML Catalogs 1.1, XBRL 2.1 §3.5.3.7.2).
+    aliases: HashMap<PathBuf, HashSet<String>>,
 }
 
 impl Discovery<'_> {
@@ -168,6 +177,14 @@ impl Discovery<'_> {
                 }
             })?;
         let path = file.path.clone();
+        // Record both names of this document. An extension linkbase may name
+        // a catalog-mapped schema by its remote URI even if discovery first
+        // reached it through the mapped local name (or vice versa).
+        {
+            let names = self.aliases.entry(path.clone()).or_default();
+            names.insert(file.requested.without_fragment().to_string());
+            names.insert(file.mapped.without_fragment().to_string());
+        }
         if self.visited.insert(path.clone()) {
             if self.documents.len() >= self.builder.limits.max_documents {
                 return Err(diagnostic(
@@ -248,27 +265,36 @@ impl Discovery<'_> {
     #[allow(clippy::field_reassign_with_default)]
     fn finish(self) -> Result<Dts, Diagnostic> {
         let mut dts = Dts::default();
-        dts.documents = self.documents;
+        dts.documents = self.documents.clone();
         let max = self.builder.limits.max_items;
         let mut count = 0_usize;
 
         // XML IDs are document-scoped (XML 1.0 §3.3.1), so index them by the
-        // absolute document URI actually read. Only top-level concept ids are
-        // targets for linkbase arcs; every other id (including named types)
-        // is retained for duplicate detection but resolves to no concept
-        // (XBRL 2.1 §5.2.2.3/§5.2.4.2/§5.2.5.2).
-        let mut ids: HashMap<(String, String), Option<QName>> = HashMap::new();
+        // canonical local document, not by the URI used to name it. All URI
+        // aliases (catalog source, mapped file URI, relative or absolute href)
+        // are resolved back to that path before lookup.
+        let mut ids: HashMap<(PathBuf, String), Option<QName>> = HashMap::new();
+        let mut alias_paths: HashMap<String, PathBuf> = HashMap::new();
         let mut concepts: BTreeMap<String, Concept> = BTreeMap::new();
         let mut types: BTreeMap<String, TypeDefinition> = BTreeMap::new();
-        for (uri, parsed) in &self.parsed {
+        for ((uri, parsed), document) in self.parsed.iter().zip(&self.documents) {
             let ParsedDocument::Schema(schema) = parsed else {
                 continue;
             };
+            // Every name that resolved to this schema (the mapped file URI,
+            // catalog source URIs, and relative/absolute aliases) addresses
+            // the same document-scoped ID table.
+            for alias in self.aliases[&document.path]
+                .iter()
+                .chain(std::iter::once(uri))
+            {
+                alias_paths.insert(alias.clone(), document.path.clone());
+            }
             for (id, name) in &schema.ids {
                 count += 1;
                 check_limit(count, max)?;
                 if ids
-                    .insert((uri.clone(), id.clone()), name.clone())
+                    .insert((document.path.clone(), id.clone()), name.clone())
                     .is_some()
                 {
                     return Err(diagnostic(
@@ -323,7 +349,10 @@ impl Discovery<'_> {
                 return Err(locator_error(&loc.href, loc.span));
             };
             let document = target.without_fragment().to_string();
-            match ids.get(&(document, id.to_owned())) {
+            let Some(path) = alias_paths.get(&document) else {
+                return Err(locator_error(&loc.href, loc.span));
+            };
+            match ids.get(&(path.clone(), id.to_owned())) {
                 Some(Some(name)) => Ok(name.clone()),
                 Some(None) => Err(locator_error(&loc.href, loc.span)),
                 None => Err(locator_error(&loc.href, loc.span)),
@@ -348,11 +377,16 @@ impl Discovery<'_> {
                         .or_default()
                         .push(resolve_loc(loc)?);
                 }
-                let resource_labels: HashSet<&str> = link
-                    .resources
-                    .iter()
-                    .map(|resource| resource.label.as_str())
-                    .collect();
+                let mut resources: BTreeMap<&str, Vec<&ParsedLabelResource>> = BTreeMap::new();
+                for resource in &link.resources {
+                    resources
+                        .entry(resource.label.as_str())
+                        .or_default()
+                        .push(resource);
+                }
+                let is_endpoint = |label: &str| -> bool {
+                    locs.contains_key(label) || resources.contains_key(label)
+                };
                 // Label associations come only from concept-label arcs
                 // (XBRL 2.1 §5.2.2.3); an orphan resource is not a label.
                 for arc in &link.arcs {
@@ -373,9 +407,8 @@ impl Discovery<'_> {
                         if arc.arcrole != CONCEPT_LABEL {
                             continue;
                         }
-                        let is_endpoint = |label: &str| -> bool {
-                            locs.contains_key(label) || resource_labels.contains(label)
-                        };
+                        // XLink arc endpoints name either a locator or a
+                        // resource; an unknown label is a typed error.
                         for endpoint in [&arc.from, &arc.to] {
                             if !is_endpoint(endpoint) {
                                 return Err(arc_error(
@@ -392,7 +425,7 @@ impl Discovery<'_> {
                                 continue;
                             }
                             for concept in concepts {
-                                for resource in link.resources.iter().filter(|r| r.label == arc.to)
+                                for resource in resources.get(arc.to.as_str()).into_iter().flatten()
                                 {
                                     count += 1;
                                     check_limit(count, max)?;

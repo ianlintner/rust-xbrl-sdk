@@ -233,6 +233,25 @@ fn ids_are_document_scoped_and_hrefs_name_the_document() {
 }
 
 #[test]
+fn locator_by_catalog_mapped_remote_uri_resolves() {
+    // OASIS XML Catalogs 1.1 §6.5.5 rewriteURI: extension linkbases normally
+    // locate concepts by the remote taxonomy URI, not the mapped local path.
+    let root = fixtures().join("fixes");
+    let mut builder = DtsBuilder::new(&root).expect("document root");
+    builder
+        .add_catalog_file("catalog.xml", None)
+        .expect("catalog");
+    builder.limits(DtsLimits {
+        max_documents: 8,
+        ..DtsLimits::default()
+    });
+    let dts = builder.discover("catalog-entry.xsd").expect("catalog DTS");
+    let base = QName::new(None, "http://example.com/catalog-base", "Base").expect("qname");
+    assert_eq!(dts.documents().len(), 3);
+    assert_eq!(dts.labels(&base)[0].text, "Catalog-mapped base");
+}
+
+#[test]
 fn locator_to_undiscovered_document_is_rejected() {
     let error = load_subdir("broken", "wrong-document-locator.xsd")
         .expect_err("locator to a document outside the DTS");

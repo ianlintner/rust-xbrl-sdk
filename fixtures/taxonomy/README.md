@@ -28,7 +28,12 @@ its own authored provenance comment.
 | `broken/prohibited-arc.*`, `broken/priority-arc.*` | Unsupported arc `use`/`priority` are reported instead of silently becoming relationships. `use` uses the standard unprefixed form from XBRL 2.1 §3.5.3.9.7.4 / xl-2003-12-31.xsd. |
 | `broken/type-locator.*` | A locator to a named `xs:simpleType` id is not a concept and fails closed (XBRL 2.1 §5.2.4.2). |
 | `fixes/shared-locator.*` | An xlink label shared by two locators fans out to both relationship targets in document order (XLink 1.0 §5.1.3). |
+| `fixes/catalog.xml`, `fixes/catalog-entry.xsd`, `fixes/tax/base.xsd`, `fixes/catalog-label.xml` | OASIS XML Catalogs 1.1 §6.5.5: locator hrefs naming a catalog-mapped remote schema resolve to the discovered local document. |
 | `broken/bad-decimal.xml`, `broken/bad-decimal.xsd` | Non-decimal `order` (`NaN`) is rejected (XML Schema 1.0 §3.2.3). |
+
+Relationship equivalence and priority-based arc override are not implemented;
+non-default priority and `use="prohibited"` fail closed with `UNSUPPORTED`
+(XBRL 2.1 §3.5.3.9.7.4).
 
 Official conformance material (not copied; no pass/fail claim): the XBRL
 2025-07-16 conformance archive at
