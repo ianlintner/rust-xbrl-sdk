@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository. OASIS XML Catalogs 1.1 (2005-10-07) §6.5.5:
+     rewriteURI maps the remote taxonomy namespace to this local directory. -->
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <rewriteURI uriStartString="http://remote.example/tax/" rewritePrefix="tax/"/>
+</catalog>

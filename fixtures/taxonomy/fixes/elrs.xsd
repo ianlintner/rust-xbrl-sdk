@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Two different ELRs contain opposite arcs between the same concepts.
+     They are distinct networks; a global graph would report a false cycle. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/elrs"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="elrs.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="A" id="A" type="xs:decimal"/>
+  <xs:element name="B" id="B" type="xs:decimal"/>
+</xs:schema>

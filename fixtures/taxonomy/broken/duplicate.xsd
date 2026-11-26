@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: two elements with the same id in one DTS. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://example.com/broken" xmlns:ex="http://example.com/broken">
+  <xs:element name="First" type="xs:string" id="Duplicate"/>
+  <xs:element name="Second" type="xs:string" id="Duplicate"/>
+</xs:schema>

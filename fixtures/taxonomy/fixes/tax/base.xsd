@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository. The catalog maps the remote URI of this
+     schema to this local file; its XML ID is document-scoped. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/catalog-base"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="../catalog-label.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="Base" id="Base" type="xs:decimal"/>
+</xs:schema>

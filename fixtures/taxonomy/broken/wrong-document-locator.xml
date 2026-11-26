@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: locator names an existing id in a different
+     document that is not in the DTS; must fail closed. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:presentationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/presentationLink">
+    <link:loc xlink:type="locator" xlink:href="does-not-exist.xsd#Item" xlink:label="a"/>
+    <link:loc xlink:type="locator" xlink:href="scoped-a.xsd#Item" xlink:label="b"/>
+    <link:presentationArc xlink:type="arc" xlink:from="a" xlink:to="b"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child" order="1"/>
+  </link:presentationLink>
+</link:linkbase>

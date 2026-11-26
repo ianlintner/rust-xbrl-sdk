@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository from XBRL 2.1 §5.2.3, §6 and XLink 1.0
+     §5.1.3: conventional loc_A -> labelArc -> lab_A associations. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/link">
+    <link:loc xlink:type="locator" xlink:href="std-label.xsd#Revenue" xlink:label="loc_revenue"/>
+    <link:loc xlink:type="locator" xlink:href="std-label.xsd#Assets" xlink:label="loc_assets"/>
+    <link:label xlink:type="resource" xlink:label="lab_revenue" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="en" xmlns:xml="http://www.w3.org/XML/1998/namespace">Standard revenue</link:label>
+    <link:label xlink:type="resource" xlink:label="lab_assets" xlink:role="http://www.xbrl.org/2003/role/label" xml:lang="en" xmlns:xml="http://www.w3.org/XML/1998/namespace">Orphan assets</link:label>
+    <link:labelArc xlink:type="arc" xlink:from="loc_revenue" xlink:to="lab_revenue" xlink:arcrole="http://www.xbrl.org/2003/arcrole/concept-label"/>
+  </link:labelLink>
+</link:linkbase>

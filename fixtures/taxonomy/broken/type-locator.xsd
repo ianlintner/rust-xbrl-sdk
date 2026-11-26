@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: presentation arcs connect concepts, not named
+     types. XBRL 2.1 Recommendation 2003-12-31 §5.2.4.2; a locator to an
+     xs:simpleType id must fail closed (LOCATOR_UNRESOLVED). -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/type-loc"
+           elementFormDefault="qualified">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="type-locator.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:simpleType name="CodeType" id="CodeType">
+    <xs:restriction base="xs:string"/>
+  </xs:simpleType>
+  <xs:element name="Item" id="Item" type="xs:string"/>
+</xs:schema>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored positive fixture for a shared xlink:label on two locators. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:presentationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/presentationLink">
+    <link:loc xlink:type="locator" xlink:href="shared-locator.xsd#Root" xlink:label="root"/>
+    <link:loc xlink:type="locator" xlink:href="shared-locator.xsd#B" xlink:label="kids"/>
+    <link:loc xlink:type="locator" xlink:href="shared-locator.xsd#C" xlink:label="kids"/>
+    <link:presentationArc xlink:type="arc" xlink:from="root" xlink:to="kids"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child" order="1"/>
+  </link:presentationLink>
+</link:linkbase>

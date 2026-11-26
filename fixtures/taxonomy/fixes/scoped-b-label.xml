@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink"
+               xmlns:xml="http://www.w3.org/XML/1998/namespace">
+  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/link">
+    <link:loc xlink:type="locator" xlink:href="scoped-b.xsd#Item" xlink:label="loc_b"/>
+    <link:label xlink:type="resource" xlink:label="lab_b" xml:lang="en">B item</link:label>
+    <link:labelArc xlink:type="arc" xlink:from="loc_b" xlink:to="lab_b"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/concept-label"/>
+  </link:labelLink>
+</link:linkbase>

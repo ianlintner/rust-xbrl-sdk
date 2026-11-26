@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository from XBRL 2.1 §5.2.2 and the standard
+     calculation role http://www.xbrl.org/2003/role/calculationLink. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:calculationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/calculationLink">
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Assets" xlink:label="assets"/>
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Revenue" xlink:label="rev"/>
+    <link:loc xlink:type="locator" xlink:href="example.xsd#Expenses" xlink:label="exp"/>
+    <link:calculationArc xlink:type="arc" xlink:from="assets" xlink:to="rev"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item"
+        order="2" weight="1"/>
+    <link:calculationArc xlink:type="arc" xlink:from="assets" xlink:to="exp"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/summation-item"
+        order="1" weight="-1"/>
+  </link:calculationLink>
+</link:linkbase>

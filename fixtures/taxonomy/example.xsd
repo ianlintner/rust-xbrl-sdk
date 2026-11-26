@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored for this repository from XBRL 2.1 Recommendation 2003-12-31 with
+     errata through 2013-02-20, §§3, 4.3, 5.1-5.3, 6-7; no external content. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:ex="http://example.com/taxonomy"
+           xmlns:link="http://www.xbrl.org/2003/linkbase"
+           xmlns:xlink="http://www.w3.org/1999/xlink"
+           targetNamespace="http://example.com/taxonomy"
+           elementFormDefault="qualified"
+           id="example-schema">
+  <xs:annotation>
+    <xs:appinfo>
+      <link:linkbaseRef xlink:type="simple" xlink:href="example-label.xml" xlink:role="http://www.xbrl.org/2003/role/labelLinkbaseRef" xlink:arcrole="http://www.w3.org/1999/xlink/properties/linkbase"/>
+      <link:linkbaseRef xlink:type="simple" xlink:href="example-presentation.xml" xlink:role="http://www.xbrl.org/2003/role/presentationLinkbaseRef" xlink:arcrole="http://www.w3.org/1999/xlink/properties/linkbase"/>
+      <link:linkbaseRef xlink:type="simple" xlink:href="example-calculation.xml" xlink:role="http://www.xbrl.org/2003/role/calculationLinkbaseRef" xlink:arcrole="http://www.w3.org/1999/xlink/properties/linkbase"/>
+    </xs:appinfo>
+  </xs:annotation>
+  <xs:include schemaLocation="example-types.xsd"/>
+  <xs:element name="Revenue" type="ex:MonetaryType" id="Revenue"
+              substitutionGroup="xbrli:item"
+              abstract="false" nillable="true"
+              xbrli:periodType="duration" xmlns:xbrli="http://www.xbrl.org/2003/instance"/>
+  <xs:element name="Assets" type="ex:MonetaryType" id="Assets"
+              substitutionGroup="xbrli:item"
+              abstract="false" nillable="false"
+              xbrli:periodType="instant" xmlns:xbrli="http://www.xbrl.org/2003/instance"/>
+  <xs:element name="Expenses" type="ex:MonetaryType" id="Expenses"
+              substitutionGroup="xbrli:item"
+              abstract="false" nillable="false"
+              xbrli:periodType="duration" xmlns:xbrli="http://www.xbrl.org/2003/instance"/>
+  <xs:element name="Totals" type="xs:string" id="Totals" abstract="true"
+              substitutionGroup="xbrli:item" xmlns:xbrli="http://www.xbrl.org/2003/instance"/>
+</xs:schema>

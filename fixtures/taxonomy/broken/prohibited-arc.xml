@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: XBRL 2.1 §3.5.3.9.7.4 defines `use` and
+     `priority` as unprefixed attributes on xl:arcType (xl-2003-12-31.xsd);
+     XLink 1.0 has no `use` attribute. -->
+<link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+               xmlns:xlink="http://www.w3.org/1999/xlink">
+  <link:presentationLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/presentationLink">
+    <link:loc xlink:type="locator" xlink:href="prohibited-arc.xsd#Item" xlink:label="a"/>
+    <link:loc xlink:type="locator" xlink:href="prohibited-arc.xsd#Item" xlink:label="b"/>
+    <link:presentationArc xlink:type="arc" xlink:from="a" xlink:to="b" use="prohibited"
+        xlink:arcrole="http://www.xbrl.org/2003/arcrole/parent-child" order="1"/>
+  </link:presentationLink>
+</link:linkbase>

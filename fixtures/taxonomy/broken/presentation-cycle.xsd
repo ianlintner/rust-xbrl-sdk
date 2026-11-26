@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Authored negative fixture: schema with a cyclic presentation linkbase. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://example.com/broken" xmlns:ex="http://example.com/broken"
+           xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <xs:annotation><xs:appinfo>
+    <link:linkbaseRef xlink:type="simple" xlink:href="presentation-cycle.xml"/>
+  </xs:appinfo></xs:annotation>
+  <xs:element name="Item" type="xs:string" id="Item"/>
+</xs:schema>
