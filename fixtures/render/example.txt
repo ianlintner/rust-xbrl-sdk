@@ -1,0 +1,6 @@
+ELR: http://www.xbrl.org/2003/role/presentationLink
+Label                               | Concept                              | c2 2025-01-01 to 2025-12-31
+------------------------------------+--------------------------------------+-----------------------------
+{http://example.com/taxonomy}Totals | {http://example.com/taxonomy}Totals  |
+  Total revenue                     | {http://example.com/taxonomy}Revenue | 123000 iso:USD [decimals=-3]
+  Assets                            | {http://example.com/taxonomy}Assets  | [missing]

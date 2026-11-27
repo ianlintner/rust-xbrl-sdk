@@ -1,0 +1,8 @@
+Depth,Label,Concept,c1 2025-12-31,c2 2025-01-01 to 2025-12-31,cf forever,cd 2024-12-31 [unsupported: dimensional context]
+0,ex:Root,ex:Root,,,,[unsupported: dimensional context]
+1,Total revenue,ex:Rev,[missing],123000 iso:USD [decimals=-3],[missing],[unsupported: dimensional context]
+1,ex:Nil,ex:Nil,[nil],[missing],[missing],[unsupported: dimensional context]
+1,Duplicated item,ex:Dup,[duplicate: 2 facts],[missing],[missing],[unsupported: dimensional context]
+2,ex:Txt,ex:Txt,[missing],[missing],"line1
+line2, ""q""",[unsupported: dimensional context]
+1,"R&D <b>""x""</b>, 'y'",ex:Weird,'=1+1 <i>&</i>,[missing],[missing],[unsupported: dimensional context]
