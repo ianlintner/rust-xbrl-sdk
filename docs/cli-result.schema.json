@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xbrl-sdk/cli-result/v1",
+  "title": "xbrl CLI machine-readable result",
+  "description": "Stable output of `xbrl <command> --json`. Every field is always present; absent values are null or empty arrays. Rule ids, severities and byte spans come from xbrl_core::diagnostic (XBRL 2.1 REC 2003-12-31, errata 2013-02-20). See docs/agent-tool-contract.md for the exit-code and support-state policy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "command",
+    "status",
+    "exit_code",
+    "input",
+    "summary",
+    "diagnostics",
+    "diagnostics_truncated",
+    "error",
+    "output"
+  ],
+  "properties": {
+    "schema": {
+      "const": "xbrl-sdk/cli-result/v1",
+      "description": "Schema identifier. A change to any field name, ordering or value vocabulary requires a new id."
+    },
+    "command": {
+      "type": "string",
+      "enum": ["parse", "validate", "render", "unknown"],
+      "description": "Subcommand that produced the result; `unknown` is used when the command line failed before a known subcommand was identified."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "findings", "error"],
+      "description": "ok: completed with no error-severity diagnostic. findings: completed with at least one error-severity diagnostic. error: could not complete."
+    },
+    "exit_code": {
+      "type": "integer",
+      "enum": [0, 1, 2, 4],
+      "description": "0 ok, 1 findings, 2 usage error, 4 input error."
+    },
+    "input": {
+      "$ref": "#/$defs/input"
+    },
+    "summary": {
+      "oneOf": [
+        { "$ref": "#/$defs/parseSummary" },
+        { "$ref": "#/$defs/validateSummary" },
+        { "$ref": "#/$defs/renderSummary" },
+        { "$ref": "#/$defs/errorSummary" }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "description": "All retained findings in deterministic order; empty when none were emitted.",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "diagnostics_truncated": {
+      "type": "boolean",
+      "description": "True when the producing component dropped findings because a configured limit was reached. Never claim completeness when true."
+    },
+    "error": {
+      "type": ["string", "null"],
+      "description": "Human-readable failure reason when status is error; null otherwise."
+    },
+    "output": {
+      "oneOf": [
+        { "$ref": "#/$defs/output" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Instance path exactly as supplied on the command line; not canonicalized."
+        }
+      }
+    },
+    "parseSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_refs", "contexts", "units", "facts"],
+      "properties": {
+        "schema_refs": { "type": "integer", "minimum": 0 },
+        "contexts": { "type": "integer", "minimum": 0 },
+        "units": { "type": "integer", "minimum": 0 },
+        "facts": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "validateSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rules_executed",
+        "findings",
+        "errors",
+        "warnings",
+        "info",
+        "findings_truncated",
+        "dts_entry"
+      ],
+      "properties": {
+        "rules_executed": {
+          "type": "array",
+          "description": "Rule families actually executed, in execution order; not a claim of full coverage.",
+          "items": { "type": "string" }
+        },
+        "findings": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "info": { "type": "integer", "minimum": 0 },
+        "findings_truncated": { "type": "boolean" },
+        "dts_entry": { "type": ["string", "null"] }
+      }
+    },
+    "renderSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reports", "dts_entry"],
+      "properties": {
+        "reports": { "type": "integer", "minimum": 0 },
+        "dts_entry": { "type": "string" }
+      }
+    },
+    "errorSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["usage", "input", "parse"] }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "text"],
+      "properties": {
+        "format": { "type": "string", "enum": ["text", "html", "csv"] },
+        "text": { "type": "string" }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "severity", "message", "span"],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "Stable rule id such as xbrl-instance:invalid-root or xbrl-validate:unresolved-reference. Renaming is breaking."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "warning", "error"],
+          "description": "The three Severity variants of xbrl_core::diagnostic, lowercase."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable message; does not contain the rule id or location."
+        },
+        "span": {
+          "type": ["object", "null"],
+          "description": "Half-open byte offsets in the original UTF-8 source, or null for a document-wide finding.",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": { "type": "integer", "minimum": 0 },
+            "end": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

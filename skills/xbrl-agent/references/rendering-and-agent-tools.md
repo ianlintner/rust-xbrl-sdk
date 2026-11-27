@@ -12,4 +12,5 @@ A future MCP server should be a thin Rust wrapper over deterministic SDK operati
 A file-creation/authoring tool should be separate, opt-in and reviewable; never overwrite a filing or publish one as a side effect of read-only inspection. Do not expose raw filesystem paths outside a configured workspace. Put all network, resource and size limits in Rust SDK/resolver so MCP callers cannot bypass them.
 
 ## Before using a tool
-Inspect `README.md`, the implemented CLI `--help`, and code/tests for the operation and output schema. This skill does not claim the proposed MCP methods or CLI flags exist today. Do not invent a JSON result; capture a real run and cite the exact input/artifact.
+The CLI is implemented: see `docs/agent-tool-contract.md` and `docs/cli-result.schema.json` for the real `--json` envelope, exit codes and captured runs. The MCP methods above remain a design proposal only.
+Inspect `README.md`, the implemented CLI `--help`, and code/tests for the operation and output schema. Do not invent a JSON result; capture a real run and cite the exact input/artifact.
