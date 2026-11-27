@@ -25,6 +25,7 @@ fixture stays `authored`, and the corresponding conformance claim stays open
 |---|---|
 | `qname/lexical.tsv` | `xbrl-core` qualified-name lexical cases (authored). |
 | `instance/basic.xml`, `instance/invalid.tsv` | XBRL 2.1 instance extraction positives and rule-coded negatives (authored; see `instance/README.md`). |
+| `render/*` | Text/HTML/CSV goldens for `xbrl-render` (authored scenario and derived smoke; see `render/README.md`). |
 
 ## File format
 

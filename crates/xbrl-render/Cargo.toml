@@ -1,6 +1,6 @@
 [package]
 name = "xbrl-render"
-description = "HEADLESS rendering of XBRL report tables (scaffold: no implementation yet)."
+description = "HEADLESS rendering of XBRL presentation-tree reports to text, HTML and CSV."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,3 +15,9 @@ workspace = true
 [dependencies]
 xbrl-core.workspace = true
 xbrl-taxonomy.workspace = true
+
+# Test-only: the fixture smoke test parses local files into the typed model.
+# `xbrl-xml` is already a (transitive) dependency of `xbrl-taxonomy`, same MIT
+# workspace license; it is not a runtime dependency of this crate.
+[dev-dependencies]
+xbrl-xml.workspace = true
