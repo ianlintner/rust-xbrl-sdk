@@ -1,9 +1,11 @@
 # Architecture and dependency boundaries
 
-Status: **milestones 1–3 in progress** (PLAN.md). `xbrl-core` holds the typed
-syntax model and `xbrl-xml` provides bounded XML/instance extraction; other
-crates remain scaffolded. This is not DTS validation or XBRL conformance.
-The contract below governs future phases.
+Status: **milestones 1–7 implemented (bounded slices); milestone 8 records
+integration, benchmark provenance and limitations** (PLAN.md). `xbrl-core` holds
+the typed syntax model, `xbrl-xml` provides bounded XML/instance extraction, and
+`xbrl-taxonomy`, `xbrl-validate`, `xbrl-render` and `xbrl-cli` implement the MVP
+slices. `xbrl-inline` remains a scaffold. This is **not** XBRL conformance;
+[support-matrix.md](support-matrix.md) lists the exact scope.
 
 ## Crates and their allowed dependencies
 
@@ -34,12 +36,22 @@ Rules that make the boundaries load-bearing:
    user-visible problems, and no rule id is renamed without treating it as a
    breaking change (consumers filter on it).
 5. **Fail closed.** A construct the SDK does not implement must be reported as
-   unsupported — never silently accepted and never counted as passing. This is
-   why `xbrl` exits `3` for its reserved subcommands today instead of printing an
-   empty success.
+   unsupported — never silently accepted and never counted as passing. `xbrl`
+   emits `xbrl-validate:unsupported` when validation is requested without a DTS
+   and treats unknown subcommands as usage errors; it never prints an empty
+   success for work it did not do.
 6. **No remote I/O by default.** Resolvers read local files only; any future
    network path is opt-in, explicitly bounded (size, depth, cycles) and
    documented.
+7. **One canonical graph traversal.** `xbrl-taxonomy::Dts::graph_*` is the single
+   relationship walker. `presentation_*` and `calculation_*` helpers only fix the
+   `LinkbaseKind`; they are not parallel traversal implementations. A
+   `GraphChild` carries the resolved concept plus one `Relationship`, and arc
+   order, weight and preferred label are read through `GraphChild::edge()` so no
+   copied edge fields can drift. `xbrl-render` builds its own presentation row
+   state from the typed `RenderInput` (ELR partition, input-order ties and
+   `[cycle]` / `[already shown]` markers) under rule 3; it does not duplicate a
+   second DTS graph walk.
 
 ## Test and fixture strategy
 
