@@ -470,9 +470,13 @@ dependencies = [
 name = "xbrl-cli"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "xbrl-core",
  "xbrl-render",
+ "xbrl-taxonomy",
  "xbrl-validate",
+ "xbrl-xml",
 ]
 
 [[package]]
