@@ -4,6 +4,13 @@
 //! used; each extended-link role (ELR) is a separate network, reported in
 //! ELR-URI order. Children follow `order` (ties: input order). Roots are
 //! concepts that are a `from` but never a `to` in the same ELR, in input order.
+//! A network consisting only of cycles has no root; its remaining `from`
+//! concepts are walked in input order so no arc is silently dropped.
+//! Each concept's children are expanded at most once per ELR: a later path to
+//! an already expanded concept emits a single `[already shown]` marker row,
+//! and an edge back into the current path emits `[cycle]`. Output is therefore
+//! linear in the number of arcs, and the walk is iterative (no stack overflow
+//! on deep chains).
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use xbrl_core::instance::{Context, Fact, Instance};
@@ -122,31 +129,84 @@ pub fn build_reports(input: &RenderInput<'_>, options: &RenderOptions) -> Vec<Re
         .collect()
 }
 
-struct Walk<'a> {
-    children: HashMap<&'a QName, Vec<&'a Relationship>>,
-    /// `(depth, concept, preferred label role, cycle)` in display order.
-    rows: Vec<(usize, &'a QName, Option<&'a str>, bool)>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowState {
+    /// First occurrence: children are expanded.
+    Shown,
+    /// Edge closing a cycle on the current path.
+    Cycle,
+    /// Subtree already expanded earlier in this ELR.
+    Repeated,
 }
 
-impl<'a> Walk<'a> {
-    fn visit(
-        &mut self,
+struct Walk<'a> {
+    children: HashMap<&'a QName, Vec<&'a Relationship>>,
+    /// `(depth, concept, preferred label role, state)` in display order.
+    rows: Vec<(usize, &'a QName, Option<&'a str>, RowState)>,
+    /// Concepts whose children have already been emitted in this ELR.
+    expanded: HashSet<&'a QName>,
+}
+
+enum Step<'a> {
+    Enter {
         concept: &'a QName,
         depth: usize,
         pref: Option<&'a str>,
-        path: &mut Vec<&'a QName>,
-    ) {
-        if path.contains(&concept) {
-            self.rows.push((depth, concept, pref, true));
-            return;
+    },
+    Leave,
+}
+
+impl<'a> Walk<'a> {
+    /// Iterative preorder walk. Cycles are checked on the current path; a
+    /// concept expanded in an earlier branch is shown once as `Repeated`
+    /// instead of expanding its whole subtree again (which grew exponentially
+    /// on diamond-shaped linkbases). `expanded` is shared across roots.
+    fn walk_from(&mut self, concept: &'a QName, depth: usize, pref: Option<&'a str>) {
+        let mut stack = vec![Step::Enter {
+            concept,
+            depth,
+            pref,
+        }];
+        let mut path: Vec<&'a QName> = Vec::new();
+        let mut on_path: HashSet<&'a QName> = HashSet::new();
+        while let Some(step) = stack.pop() {
+            match step {
+                Step::Enter {
+                    concept,
+                    depth,
+                    pref,
+                } => {
+                    let state = if on_path.contains(concept) {
+                        RowState::Cycle
+                    } else if self.expanded.contains(concept) {
+                        RowState::Repeated
+                    } else {
+                        RowState::Shown
+                    };
+                    self.rows.push((depth, concept, pref, state));
+                    if state != RowState::Shown {
+                        continue;
+                    }
+                    self.expanded.insert(concept);
+                    on_path.insert(concept);
+                    path.push(concept);
+                    stack.push(Step::Leave);
+                    if let Some(kids) = self.children.get(concept) {
+                        for k in kids.iter().rev() {
+                            stack.push(Step::Enter {
+                                concept: &k.to,
+                                depth: depth + 1,
+                                pref: k.preferred_label.as_deref(),
+                            });
+                        }
+                    }
+                }
+                Step::Leave => {
+                    let done = path.pop().expect("matching Enter frame");
+                    on_path.remove(done);
+                }
+            }
         }
-        self.rows.push((depth, concept, pref, false));
-        path.push(concept);
-        let kids = self.children.get(concept).cloned().unwrap_or_default();
-        for k in kids {
-            self.visit(&k.to, depth + 1, k.preferred_label.as_deref(), path);
-        }
-        path.pop();
     }
 }
 
@@ -169,9 +229,21 @@ fn build_table(input: &RenderInput<'_>, options: &RenderOptions, rels: &[&Relati
     let mut walk = Walk {
         children,
         rows: Vec::new(),
+        expanded: HashSet::new(),
     };
     for root in roots {
-        walk.visit(root, 0, None, &mut Vec::new());
+        walk.walk_from(root, 0, None);
+    }
+    // A network can consist only of cycles (A->B, B->A): no concept is a `from`
+    // that is never a `to`, so the root walk never starts. Walk any remaining
+    // `from` concepts in input order; `walk_from` marks the closing arc as a
+    // cycle.
+    let mut visited: HashSet<&QName> = walk.rows.iter().map(|r| r.1).collect();
+    for r in rels {
+        if !visited.contains(&r.from) {
+            walk.walk_from(&r.from, 0, None);
+            visited.extend(walk.rows.iter().map(|row| row.1));
+        }
     }
 
     let in_tree: HashSet<&QName> = walk.rows.iter().map(|r| r.1).collect();
@@ -225,12 +297,14 @@ fn build_table(input: &RenderInput<'_>, options: &RenderOptions, rels: &[&Relati
     let rows = walk
         .rows
         .iter()
-        .map(|&(depth, concept, pref, cycle)| {
+        .map(|&(depth, concept, pref, state)| {
             let role = pref.unwrap_or(&options.label_role);
             let mut label = select_label(input.labels, concept, role, &options.languages)
                 .map_or_else(|| qname_display(concept), |l| l.text.clone());
-            if cycle {
-                label.push_str(" [cycle]");
+            match state {
+                RowState::Shown => {}
+                RowState::Cycle => label.push_str(" [cycle]"),
+                RowState::Repeated => label.push_str(" [already shown]"),
             }
             let mut cells = vec![
                 Cell {
@@ -248,7 +322,7 @@ fn build_table(input: &RenderInput<'_>, options: &RenderOptions, rels: &[&Relati
                     c.as_ref().copied(),
                     facts.get(&(concept, *id)),
                     abstract_names.contains(concept),
-                    cycle,
+                    state != RowState::Shown,
                 ));
             }
             Row { depth, cells }
@@ -267,7 +341,8 @@ fn cell_for(
     context: Option<&Context>,
     facts: Option<&Vec<&Fact>>,
     is_abstract: bool,
-    cycle: bool,
+    // Cycle or repeated occurrence: never show a value twice.
+    suppressed: bool,
 ) -> Cell {
     let simple = |text: &str, kind| Cell {
         text: text.to_owned(),
@@ -276,7 +351,7 @@ fn cell_for(
     if context.is_some_and(is_dimensional) {
         return simple(UNSUPPORTED, CellKind::Unsupported);
     }
-    if is_abstract || cycle {
+    if is_abstract || suppressed {
         return simple("", CellKind::Empty);
     }
     match facts.map(Vec::as_slice) {

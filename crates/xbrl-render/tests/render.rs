@@ -275,8 +275,12 @@ fn cycle_terminates_and_is_marked() {
     ];
     let inst = instance(vec![], vec![]);
     let r = render(&inst, &rels, &[], &[], &RenderOptions::default());
-    // No root exists (both are targets): nothing is invented, but it terminates.
-    assert!(r.is_empty() || r[0].table.rows.len() < 10);
+    // No root exists (both are targets): the cycle is still shown and marked.
+    assert_eq!(r.len(), 1);
+    let rows = &r[0].table.rows;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2].cells[1].text, "ex:A");
+    assert!(rows[2].cells[0].text.contains("[cycle]"));
     let rels = vec![
         rel(PRES, "R", "A", 1.0, None),
         rel(PRES, "A", "B", 1.0, None),
@@ -286,6 +290,129 @@ fn cycle_terminates_and_is_marked() {
     let rows = &r[0].table.rows;
     assert_eq!(rows.len(), 4); // R, A, B, A(cycle marker)
     assert!(rows[3].cells[0].text.contains("[cycle]"));
+}
+
+#[test]
+fn rootless_cycle_is_rendered_in_input_order_with_cycle_marker() {
+    // A -> B -> A has no root by the "from but never to" rule. Rendering it as
+    // an empty report would silently drop the network the PR promises to show.
+    let rels = vec![
+        rel(PRES, "A", "B", 1.0, None),
+        rel(PRES, "B", "A", 1.0, None),
+    ];
+    let inst = instance(vec![], vec![]);
+    let report = render(&inst, &rels, &[], &[], &RenderOptions::default())
+        .into_iter()
+        .next()
+        .expect("one presentation ELR");
+    let trace: Vec<_> = report
+        .table
+        .rows
+        .iter()
+        .map(|r| (r.depth, r.cells[1].text.clone()))
+        .collect();
+    let want: Vec<(usize, String)> = [(0, "ex:A"), (1, "ex:B"), (2, "ex:A")]
+        .iter()
+        .map(|(d, n)| (*d, (*n).to_owned()))
+        .collect();
+    assert_eq!(trace, want);
+    assert!(report.table.rows[2].cells[0].text.contains("[cycle]"));
+}
+
+#[test]
+fn shared_subtree_is_expanded_once_and_later_occurrence_marked() {
+    // R -> {A, B}; A -> C -> D; B -> C. C's subtree must not be walked twice.
+    let rels = vec![
+        rel(PRES, "R", "A", 1.0, None),
+        rel(PRES, "R", "B", 2.0, None),
+        rel(PRES, "A", "C", 1.0, None),
+        rel(PRES, "B", "C", 1.0, None),
+        rel(PRES, "C", "D", 1.0, None),
+    ];
+    let inst = instance(vec![], vec![]);
+    let report = render(&inst, &rels, &[], &[], &RenderOptions::default())
+        .into_iter()
+        .next()
+        .expect("one presentation ELR");
+    let trace: Vec<(usize, String)> = report
+        .table
+        .rows
+        .iter()
+        .map(|r| (r.depth, r.cells[1].text.clone()))
+        .collect();
+    let want: Vec<(usize, String)> = [
+        (0, "ex:R"),
+        (1, "ex:A"),
+        (2, "ex:C"),
+        (3, "ex:D"),
+        (1, "ex:B"),
+        (2, "ex:C"),
+    ]
+    .iter()
+    .map(|(d, n)| (*d, (*n).to_owned()))
+    .collect();
+    assert_eq!(trace, want);
+    assert!(
+        !report.table.rows[2].cells[0]
+            .text
+            .contains("[already shown]")
+    );
+    assert!(
+        report.table.rows[5].cells[0]
+            .text
+            .contains("[already shown]")
+    );
+}
+
+#[test]
+fn chained_diamonds_have_linear_row_counts() {
+    // Each N_i splits into L_i/R_i, both reconnecting to N_{i+1}. A walk that
+    // only detects cycles on the current path would emit 5*2^n-3 rows here.
+    let n = 16;
+    let mut rels = Vec::new();
+    for i in 0..n {
+        let cur = format!("N{i}");
+        let next = format!("N{}", i + 1);
+        let l = format!("L{i}");
+        let r = format!("R{i}");
+        rels.push(rel(PRES, &cur, &l, 1.0, None));
+        rels.push(rel(PRES, &cur, &r, 2.0, None));
+        rels.push(rel(PRES, &l, &next, 1.0, None));
+        rels.push(rel(PRES, &r, &next, 1.0, None));
+    }
+    rels.push(rel(PRES, &format!("N{n}"), "Leaf", 1.0, None));
+    let inst = instance(vec![], vec![]);
+    let report = render(&inst, &rels, &[], &[], &RenderOptions::default())
+        .into_iter()
+        .next()
+        .expect("one presentation ELR");
+    assert_eq!(report.table.rows.len(), 4 * n + 2);
+    let marked = report
+        .table
+        .rows
+        .iter()
+        .filter(|r| r.cells[0].text.contains("[already shown]"))
+        .count();
+    assert_eq!(marked, n);
+}
+
+#[test]
+fn long_parent_child_chain_does_not_overflow_the_stack() {
+    // A recursive walk overflows on a deep but otherwise valid chain; the
+    // iterative walk must emit one row per concept at its actual depth.
+    let n = 20_000;
+    let rels: Vec<Relationship> = (0..n)
+        .map(|i| rel(PRES, &format!("C{i}"), &format!("C{}", i + 1), 1.0, None))
+        .collect();
+    let inst = instance(vec![], vec![]);
+    let report = render(&inst, &rels, &[], &[], &RenderOptions::default())
+        .into_iter()
+        .next()
+        .expect("one presentation ELR");
+    assert_eq!(report.table.rows.len(), n + 1);
+    assert_eq!(report.table.rows[0].depth, 0);
+    assert_eq!(report.table.rows[n].depth, n);
+    assert_eq!(report.table.rows[n].cells[1].text, format!("ex:C{n}"));
 }
 
 // ---- labels in rows ----

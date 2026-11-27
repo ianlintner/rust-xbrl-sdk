@@ -22,6 +22,15 @@
 //!   values are withheld.
 //! * Output is deterministic: it depends only on the input values and their
 //!   order. Text width is measured in `char`s (no East-Asian width tables).
+//! * A presentation network is walked once per concept: a second path to an
+//!   already shown node adds one `[already shown]` row, and an edge back into
+//!   the current path adds `[cycle]`. No subtree is expanded twice, so output
+//!   stays linear in the number of arcs even for hostile linkbases; a network
+//!   consisting only of cycles is rendered from its first `from` concept.
+//! * `[duplicate: N facts]` means N facts exist for the same concept and
+//!   context, including facts with different units. It is an explicit display
+//!   state, not an XBRL duplicate-validity verdict. Facts on abstract concepts
+//!   render as empty cells; validation, not rendering, reports them.
 
 mod build;
 mod csv;
