@@ -439,7 +439,7 @@ impl Validator {
                 let mut operands: Vec<(decimal::Decimal, Option<i64>, i64)> = Vec::new();
                 let mut failed = false;
                 for child in &summands {
-                    let w = child.edge.weight;
+                    let w = child.edge().weight;
                     if w.fract() != 0.0 || w.abs() > i64::MAX as f64 {
                         self.push(
                             report,

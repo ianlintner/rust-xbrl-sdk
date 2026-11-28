@@ -710,16 +710,18 @@ impl Dts {
         roots
     }
 
-    /// Presentation roots, a shorthand for [`Dts::graph_roots`].
+    /// Presentation roots, the generic graph API with the kind fixed to
+    /// [`LinkbaseKind::Presentation`]. Passing a kind here was a misleading
+    /// second entry point into the same traversal.
     #[must_use]
-    pub fn presentation_roots(&self, kind: LinkbaseKind) -> Vec<GraphChild> {
-        self.graph_roots(kind)
+    pub fn presentation_roots(&self) -> Vec<GraphChild> {
+        self.graph_roots(LinkbaseKind::Presentation)
     }
 
     /// Presentation roots of one extended-link network.
     #[must_use]
-    pub fn presentation_roots_in_elr(&self, kind: LinkbaseKind, elr: &str) -> Vec<GraphChild> {
-        self.graph_roots_in_elr(kind, elr)
+    pub fn presentation_roots_in_elr(&self, elr: &str) -> Vec<GraphChild> {
+        self.graph_roots_in_elr(LinkbaseKind::Presentation, elr)
     }
 
     /// Children of `concept` in a graph, sorted by numeric `order` then name.
@@ -763,21 +765,17 @@ impl Dts {
             .collect()
     }
 
-    /// Presentation children of `concept`.
+    /// Presentation children of `concept`, the generic graph API with the kind
+    /// fixed to [`LinkbaseKind::Presentation`].
     #[must_use]
-    pub fn presentation_children(&self, kind: LinkbaseKind, concept: &QName) -> Vec<GraphChild> {
-        self.graph_children(kind, concept)
+    pub fn presentation_children(&self, concept: &QName) -> Vec<GraphChild> {
+        self.graph_children(LinkbaseKind::Presentation, concept)
     }
 
     /// Presentation children of `concept` in one extended-link network.
     #[must_use]
-    pub fn presentation_children_in_elr(
-        &self,
-        kind: LinkbaseKind,
-        concept: &QName,
-        elr: &str,
-    ) -> Vec<GraphChild> {
-        self.graph_children_in_elr(kind, concept, elr)
+    pub fn presentation_children_in_elr(&self, concept: &QName, elr: &str) -> Vec<GraphChild> {
+        self.graph_children_in_elr(LinkbaseKind::Presentation, concept, elr)
     }
 
     /// Calculation summands of `concept`, sorted by numeric `order`.

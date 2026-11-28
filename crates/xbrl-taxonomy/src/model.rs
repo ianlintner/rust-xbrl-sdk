@@ -119,29 +119,25 @@ pub struct Relationship {
     pub span: Option<SourceSpan>,
 }
 
-/// A child entry returned by graph traversal.
+/// A child entry returned by graph traversal. The arc metadata lives only on
+/// [`Relationship`]; this type adds the resolved child concept and nothing else,
+/// so traversal cannot drift from the discovered edge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphChild {
     /// Child concept.
     pub concept: QName,
     /// Edge that produced this child.
     pub edge: Relationship,
-    /// Numeric `order` of the edge (duplicated for convenient traversal).
-    pub order: f64,
-    /// Numeric `weight` of the edge (meaningful for calculation arcs).
-    pub weight: f64,
-    /// `preferredLabel` role of the edge, when present.
-    pub preferred_label: Option<String>,
 }
 
 impl GraphChild {
     pub(crate) fn new(concept: QName, edge: Relationship) -> Self {
-        Self {
-            concept,
-            order: edge.order,
-            weight: edge.weight,
-            preferred_label: edge.preferred_label.clone(),
-            edge,
-        }
+        Self { concept, edge }
+    }
+
+    /// The single source of truth for arc order, weight and preferred label.
+    #[must_use]
+    pub fn edge(&self) -> &Relationship {
+        &self.edge
     }
 }

@@ -115,21 +115,25 @@ fn traverses_presentation_graph_deterministically() {
     let dts = load_subdir(".", "example.xsd").expect("valid fixture DTS");
     let namespace = "http://example.com/taxonomy";
     let totals = QName::new(None, namespace, "Totals").expect("qname");
-    let roots = dts.presentation_roots(LinkbaseKind::Presentation);
+    let roots = dts.presentation_roots();
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].concept, totals);
-    let children = dts.presentation_children(LinkbaseKind::Presentation, &totals);
+    let children = dts.presentation_children(&totals);
     assert_eq!(children.len(), 2);
     assert_eq!(children[0].concept.local_name(), "Revenue");
     assert_eq!(children[1].concept.local_name(), "Assets");
     // order is numeric; preferredLabel is preserved for the renderer.
-    assert_eq!(children[0].order, 1.0);
+    // Arc metadata has exactly one source of truth: the edge itself.
+    assert_eq!(children[0].edge().order, 1.0);
     assert_eq!(
-        children[0].preferred_label.as_deref(),
+        children[0].edge().preferred_label.as_deref(),
         Some("http://www.xbrl.org/2003/role/totalLabel")
     );
     assert_eq!(
-        dts.preferred_label(&children[0].concept, children[0].preferred_label.as_deref()),
+        dts.preferred_label(
+            &children[0].concept,
+            children[0].edge().preferred_label.as_deref()
+        ),
         Some("Total revenue")
     );
 }
@@ -143,10 +147,31 @@ fn traverses_calculation_graph_with_weights() {
     assert_eq!(summands.len(), 2);
     // Sorted by numeric order, not by source position (Revenue was written first).
     assert_eq!(summands[0].concept.local_name(), "Expenses");
-    assert_eq!(summands[0].weight, -1.0);
-    assert_eq!(summands[0].order, 1.0);
+    assert_eq!(summands[0].edge().weight, -1.0);
+    assert_eq!(summands[0].edge().order, 1.0);
     assert_eq!(summands[1].concept.local_name(), "Revenue");
-    assert_eq!(summands[1].weight, 1.0);
+    assert_eq!(summands[1].edge().weight, 1.0);
+}
+
+#[test]
+fn graph_helpers_have_one_canonical_edge_source() {
+    let dts = load_subdir(".", "example.xsd").expect("valid fixture DTS");
+    let namespace = "http://example.com/taxonomy";
+    let totals = QName::new(None, namespace, "Totals").expect("qname");
+    // The presentation helpers are just the generic graph API with the kind
+    // fixed; there is no second, kind-parameterised presentation traversal.
+    assert_eq!(
+        dts.presentation_roots(),
+        dts.graph_roots(LinkbaseKind::Presentation)
+    );
+    let children = dts.presentation_children(&totals);
+    assert_eq!(
+        children,
+        dts.graph_children(LinkbaseKind::Presentation, &totals)
+    );
+    assert_eq!(children[0].concept, children[0].edge().to);
+    assert_eq!(children[0].edge().from, totals);
+    assert_eq!(children[0].edge().kind, LinkbaseKind::Presentation);
 }
 
 #[test]
@@ -211,11 +236,9 @@ fn discovery_is_repeatable() {
     assert_eq!(first.documents(), second.documents());
     assert_eq!(
         first.presentation_children(
-            LinkbaseKind::Presentation,
             &QName::new(None, "http://example.com/taxonomy", "Totals").expect("qname")
         ),
         second.presentation_children(
-            LinkbaseKind::Presentation,
             &QName::new(None, "http://example.com/taxonomy", "Totals").expect("qname")
         )
     );
@@ -273,21 +296,9 @@ fn elrs_are_separate_networks() {
     let b = QName::new(None, "http://example.com/elrs", "B").expect("qname");
     let one = "http://example.com/elr/one";
     let two = "http://example.com/elr/two";
-    assert_eq!(
-        dts.presentation_children_in_elr(LinkbaseKind::Presentation, &a, one)
-            .len(),
-        1
-    );
-    assert_eq!(
-        dts.presentation_children_in_elr(LinkbaseKind::Presentation, &a, two)
-            .len(),
-        0
-    );
-    assert_eq!(
-        dts.presentation_children_in_elr(LinkbaseKind::Presentation, &b, two)
-            .len(),
-        1
-    );
+    assert_eq!(dts.presentation_children_in_elr(&a, one).len(), 1);
+    assert_eq!(dts.presentation_children_in_elr(&a, two).len(), 0);
+    assert_eq!(dts.presentation_children_in_elr(&b, two).len(), 1);
     assert!(dts.relationships().iter().all(|r| !r.elr.is_empty()));
 }
 
@@ -316,7 +327,7 @@ fn shared_locator_label_fans_out_to_every_target() {
     let dts = load_subdir("fixes", "shared-locator.xsd").expect("shared locator label");
     let root = QName::new(None, "http://example.com/shared-loc", "Root").expect("qname");
     let mut children: Vec<_> = dts
-        .presentation_children(LinkbaseKind::Presentation, &root)
+        .presentation_children(&root)
         .iter()
         .map(|child| child.concept.local_name().to_owned())
         .collect();
@@ -390,10 +401,6 @@ fn a_long_chain_does_not_overflow_the_stack() {
     assert_eq!(dts.concepts().len(), N + 1);
     assert_eq!(dts.relationships().len(), N);
     let root = QName::new(None, "http://example.com/deep", "C0").expect("qname");
-    assert_eq!(
-        dts.presentation_children(LinkbaseKind::Presentation, &root)
-            .len(),
-        1
-    );
+    assert_eq!(dts.presentation_children(&root).len(), 1);
     std::fs::remove_dir_all(&dir).expect("cleanup temp dir");
 }
